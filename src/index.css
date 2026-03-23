@@ -1,0 +1,42 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", "Roboto", "Helvetica Neue", ui-sans-serif, system-ui, sans-serif;
+  
+  --color-bg-main: #F5F5F7;
+  --color-nav-bg: #1C1C1E;
+  --color-primary: #D4AF37;
+  --color-secondary: #800020;
+  --color-inactive: #8E8E93;
+  --color-text-main: #2C2C2E;
+  --color-text-sub: #8E8E93;
+  --color-verified: #2E8B57;
+  --color-alert: #DC143C;
+  --color-card-bg: #FFFFFF;
+}
+
+@layer base {
+  body {
+    @apply bg-bg-main text-text-main font-sans;
+  }
+}
+
+.btn-primary {
+  @apply bg-primary text-white px-4 py-2 rounded-lg font-medium transition-opacity hover:opacity-90 disabled:opacity-50;
+}
+
+.btn-secondary {
+  @apply bg-secondary text-white px-4 py-2 rounded-lg font-medium transition-opacity hover:opacity-90 disabled:opacity-50;
+}
+
+.card {
+  @apply bg-card-bg rounded-xl shadow-sm border border-black/5 overflow-hidden;
+}
+
+.nav-link {
+  @apply text-inactive transition-colors hover:text-primary;
+}
+
+.nav-link.active {
+  @apply text-primary;
+}

@@ -1,0 +1,5 @@
+{
+  "name": "MeuHomem",
+  "description": "Plataforma de acompanhantes masculinos de elite em Angola. Perfis verificados, chat seguro e exclusividade.",
+  "requestFramePermissions": ["camera", "geolocation", "notifications"]
+}

@@ -1,0 +1,157 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Base user data for both clients and escorts",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "phone": { "type": "string" },
+        "type": { "type": "string", "enum": ["escort", "client", "admin"] },
+        "status": { "type": "string", "enum": ["active", "blocked", "pending"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "lastAccess": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "email", "type", "status"]
+    },
+    "EscortProfile": {
+      "title": "Escort Profile",
+      "description": "Detailed profile for male escorts",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "artisticName": { "type": "string" },
+        "age": { "type": "integer" },
+        "height": { "type": "number" },
+        "weight": { "type": "number" },
+        "bodyType": { "type": "string", "enum": ["magro", "atlético", "forte", "musculoso"] },
+        "eyeColor": { "type": "string" },
+        "hairColor": { "type": "string" },
+        "city": { "type": "string" },
+        "bio": { "type": "string" },
+        "languages": { "type": "array", "items": { "type": "string" } },
+        "availability": { "type": "string" },
+        "verified": { "type": "string", "enum": ["verified", "pending", "unverified"] },
+        "verificationDate": { "type": "string", "format": "date-time" },
+        "views": { "type": "integer" },
+        "rating": { "type": "number" },
+        "socialLinks": {
+          "type": "object",
+          "properties": {
+            "instagram": { "type": "string" },
+            "facebook": { "type": "string" }
+          }
+        }
+      },
+      "required": ["userId", "artisticName", "age", "city", "verified"]
+    },
+    "Price": {
+      "title": "Price",
+      "description": "Service pricing for escorts",
+      "type": "object",
+      "properties": {
+        "escortId": { "type": "string" },
+        "service": { "type": "string" },
+        "value": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    },
+    "Photo": {
+      "title": "Photo",
+      "description": "Escort profile photos",
+      "type": "object",
+      "properties": {
+        "escortId": { "type": "string" },
+        "url": { "type": "string" },
+        "isMain": { "type": "boolean" },
+        "isApproved": { "type": "boolean" },
+        "order": { "type": "integer" },
+        "uploadedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Review": {
+      "title": "Review",
+      "description": "Client reviews for escorts",
+      "type": "object",
+      "properties": {
+        "clientId": { "type": "string" },
+        "escortId": { "type": "string" },
+        "stars": { "type": "integer" },
+        "comment": { "type": "string" },
+        "date": { "type": "string", "format": "date-time" },
+        "isConfirmed": { "type": "boolean" }
+      }
+    },
+    "Message": {
+      "title": "Message",
+      "description": "Internal chat messages",
+      "type": "object",
+      "properties": {
+        "senderId": { "type": "string" },
+        "receiverId": { "type": "string" },
+        "content": { "type": "string" },
+        "isRead": { "type": "boolean" },
+        "isReported": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Report": {
+      "title": "Report",
+      "description": "User reports for misconduct",
+      "type": "object",
+      "properties": {
+        "reporterId": { "type": "string" },
+        "reportedId": { "type": "string" },
+        "type": { "type": "string" },
+        "reason": { "type": "string" },
+        "description": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "resolved", "dismissed"] },
+        "resolvedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User records"
+    },
+    "/escort_profiles/{escortId}": {
+      "schema": "EscortProfile",
+      "description": "Detailed escort profiles"
+    },
+    "/escort_profiles/{escortId}/prices/{priceId}": {
+      "schema": "Price",
+      "description": "Pricing for specific escort"
+    },
+    "/escort_profiles/{escortId}/photos/{photoId}": {
+      "schema": "Photo",
+      "description": "Photos for specific escort"
+    },
+    "/escort_profiles/{escortId}/reviews/{reviewId}": {
+      "schema": "Review",
+      "description": "Reviews for specific escort"
+    },
+    "/chats/{chatId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Chat messages between users"
+    },
+    "/reports/{reportId}": {
+      "schema": "Report",
+      "description": "User reports"
+    },
+    "/favorites/{favoriteId}": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "clientId": { "type": "string" },
+          "escortId": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "description": "User favorites"
+    }
+  }
+}
