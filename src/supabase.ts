@@ -17,3 +17,13 @@ export const supabase = createClient(supabaseUrl || 'https://placeholder.supabas
     detectSessionInUrl: true
   }
 });
+
+// Test connection on startup
+if (isSupabaseConfigured) {
+  supabase.from('users').select('id', { count: 'exact', head: true }).limit(1)
+    .then(({ error }) => {
+      if (error && error.message === 'TypeError: Failed to fetch') {
+        console.error('Supabase connection failed. Please check your URL and project status.');
+      }
+    });
+}

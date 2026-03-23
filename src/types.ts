@@ -31,9 +31,11 @@ export interface EscortProfile {
   availability?: string;
   verified: VerificationStatus;
   verificationDate?: string;
+  verificationDocumentUrl?: string;
   views: number;
   rating: number;
   mainPhotoUrl?: string;
+  photos?: Photo[];
   socialLinks?: {
     instagram?: string;
     facebook?: string;

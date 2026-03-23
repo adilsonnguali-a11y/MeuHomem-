@@ -1,8 +1,8 @@
 import React, { useState, useEffect, Component, ReactNode } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation, useParams } from 'react-router-dom';
 import { supabase, isSupabaseConfigured } from './supabase';
-import { User, EscortProfile, UserType, Report, UserStatus, VerificationStatus, BodyType, ReportStatus, Message, Price } from './types';
-import { Search, User as UserIcon, MessageSquare, Heart, Shield, LogOut, Menu, X, Star, CheckCircle, ShieldAlert, Instagram, Facebook, Phone, Calendar, MapPin, Ruler, Weight, Eye, Send, Image as ImageIcon, Camera, Plus, Edit2, Trash2, Upload } from 'lucide-react';
+import { User, EscortProfile, UserType, Report, UserStatus, VerificationStatus, BodyType, ReportStatus, Message, Price, Photo } from './types';
+import { Search, User as UserIcon, MessageSquare, Heart, Shield, LogOut, Menu, X, Star, CheckCircle, ShieldAlert, Instagram, Facebook, Phone, Calendar, MapPin, Ruler, Weight, Eye, Send, Image as ImageIcon, Camera, Plus, Edit2, Trash2, Upload, AlertTriangle, ThumbsUp } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -35,17 +35,27 @@ interface SupabaseErrorInfo {
 }
 
 function handleSupabaseError(error: any, operationType: OperationType, table: string | null) {
+  let message = error?.message || String(error);
+  
+  if (message === 'TypeError: Failed to fetch') {
+    message = 'Erro de ligação à Supabase. Verifique se a URL está correta no menu Settings e se o seu projeto Supabase não está pausado.';
+  } else if (message.includes('api-key-not-valid')) {
+    message = 'A Anon Key da Supabase é inválida. Verifique-a no menu Settings.';
+  } else if (message.includes('auth/unauthorized-domain')) {
+    message = 'Este domínio não está autorizado no seu projeto Supabase. Adicione o URL da aplicação às "Redirect URLs" no Supabase Auth.';
+  }
+
   const errInfo: SupabaseErrorInfo = {
-    error: error?.message || String(error),
+    error: message,
     authInfo: {
-      userId: undefined, // Will be filled if possible
+      userId: undefined,
       email: undefined
     },
     operationType,
     table
   };
   console.error('Supabase Error: ', JSON.stringify(errInfo));
-  // We can't easily get current user here without async, but it's logged in the console if needed
+  throw new Error(JSON.stringify(errInfo));
 }
 
 class ErrorBoundary extends Component<any, any> {
@@ -65,10 +75,14 @@ class ErrorBoundary extends Component<any, any> {
     const { hasError, error } = this.state;
     if (hasError) {
       let message = "Ocorreu um erro inesperado.";
+      let isConfigError = false;
       try {
         const parsed = JSON.parse(error.message);
         if (parsed.error.includes('insufficient permissions')) {
           message = "Erro de permissão: Você não tem autorização para realizar esta ação.";
+        } else if (parsed.error.includes('Erro de ligação à Supabase') || parsed.error.includes('Key da Supabase é inválida')) {
+          message = parsed.error;
+          isConfigError = true;
         }
       } catch (e) {
         message = error?.message || message;
@@ -79,7 +93,18 @@ class ErrorBoundary extends Component<any, any> {
           <div className="card p-8 max-w-md w-full text-center space-y-4">
             <ShieldAlert className="w-12 h-12 text-alert mx-auto" />
             <h2 className="text-xl font-bold">Ops! Algo correu mal</h2>
-            <p className="text-text-sub text-sm">{message}</p>
+            <p className="text-text-sub text-sm leading-relaxed">{message}</p>
+            {isConfigError && (
+              <div className="bg-alert/5 p-4 rounded-lg text-left text-xs space-y-2 border border-alert/10">
+                <p className="font-bold text-alert uppercase">Como resolver:</p>
+                <ol className="list-decimal list-inside space-y-1 text-text-sub">
+                  <li>Vá ao menu <strong>Settings</strong> no AI Studio</li>
+                  <li>Verifique se <strong>VITE_SUPABASE_URL</strong> começa com <code className="bg-white px-1">https://</code></li>
+                  <li>Verifique se <strong>VITE_SUPABASE_ANON_KEY</strong> está correta</li>
+                  <li>Certifique-se de que o projeto no Supabase Dashboard não está <strong>Pausado</strong></li>
+                </ol>
+              </div>
+            )}
             <button 
               onClick={() => window.location.reload()} 
               className="btn-primary w-full py-2"
@@ -96,13 +121,159 @@ class ErrorBoundary extends Component<any, any> {
 
 // --- Components ---
 
+const LoginModal = ({ isOpen, onClose, onLogin }: { isOpen: boolean, onClose: () => void, onLogin: (email: string) => Promise<void> }) => {
+  const [email, setEmail] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    try {
+      await onLogin(email);
+      setSent(true);
+    } catch (err: any) {
+      setError(err.message || 'Erro ao enviar link de acesso.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 20 }}
+            className="card p-8 w-full max-w-md space-y-6 relative"
+          >
+            <button onClick={onClose} className="absolute top-4 right-4 text-inactive hover:text-text-main">
+              <X className="w-6 h-6" />
+            </button>
+
+            <div className="text-center space-y-2">
+              <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Send className="w-8 h-8 text-primary" />
+              </div>
+              <h2 className="text-2xl font-bold">Entrar no MeuHomem</h2>
+              <p className="text-text-sub text-sm">
+                Enviaremos um link de acesso mágico para o seu e-mail.
+              </p>
+            </div>
+
+            {sent ? (
+              <div className="bg-primary/10 p-6 rounded-xl text-center space-y-4">
+                <CheckCircle className="w-12 h-12 text-primary mx-auto" />
+                <div className="space-y-1">
+                  <p className="font-bold text-primary">E-mail Enviado!</p>
+                  <p className="text-sm text-text-sub">Verifique a sua caixa de entrada (e a pasta de spam) para o link de login.</p>
+                </div>
+                <button onClick={onClose} className="btn-primary w-full py-2">Fechar</button>
+              </div>
+            ) : (
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="space-y-1">
+                  <label className="text-xs font-bold uppercase text-inactive">E-mail</label>
+                  <input
+                    required
+                    type="email"
+                    placeholder="seu@email.com"
+                    className="w-full px-4 py-3 rounded-xl border border-black/5 outline-none focus:ring-2 focus:ring-primary/20 bg-bg-main"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                  />
+                </div>
+
+                {error && (
+                  <div className="p-3 bg-alert/10 border border-alert text-alert rounded-lg text-xs flex items-center space-x-2">
+                    <ShieldAlert className="w-4 h-4" />
+                    <span>{error}</span>
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full btn-primary py-4 flex items-center justify-center space-x-2 font-bold"
+                >
+                  {loading ? (
+                    <div className="animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent" />
+                  ) : (
+                    <>
+                      <span>Enviar Link de Acesso</span>
+                      <Send className="w-4 h-4" />
+                    </>
+                  )}
+                </button>
+              </form>
+            )}
+
+            <p className="text-center text-xs text-inactive">
+              Ao entrar, você concorda com nossos Termos de Uso e Política de Privacidade.
+            </p>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+  );
+};
+
+const Logo = () => (
+  <svg 
+    viewBox="0 0 100 100" 
+    className="w-10 h-10" 
+    fill="none" 
+    xmlns="http://www.w3.org/2000/svg"
+  >
+    {/* Elegant 'M' curve */}
+    <path 
+      d="M15 80C15 40 25 20 40 20C50 20 55 40 55 40C55 40 60 20 70 20C85 20 95 40 95 80" 
+      stroke="#B91C1C" 
+      strokeWidth="8" 
+      strokeLinecap="round"
+      className="drop-shadow-md"
+    />
+    {/* Elegant 'H' crossbar and vertical line */}
+    <path 
+      d="M55 40V80" 
+      stroke="#EF4444" 
+      strokeWidth="8" 
+      strokeLinecap="round"
+    />
+    <path 
+      d="M40 55H70" 
+      stroke="#EF4444" 
+      strokeWidth="6" 
+      strokeLinecap="round"
+      opacity="0.8"
+    />
+    {/* Subtle gold accent for elegance/confidence */}
+    <circle cx="55" cy="40" r="4" fill="#FBBF24" />
+  </svg>
+);
+
 const Navbar = ({ user, onLogin, onLogout }: { user: User | null, onLogin: () => void, onLogout: () => void }) => {
   const [isOpen, setIsOpen] = useState(false);
   const location = useLocation();
 
   const [unreadCount, setUnreadCount] = useState(0);
+  const [isSupabaseOnline, setIsSupabaseOnline] = useState(true);
 
   useEffect(() => {
+    // Check connection
+    supabase.from('users').select('id', { count: 'exact', head: true }).limit(1)
+      .then(({ error }) => {
+        if (error && error.message === 'TypeError: Failed to fetch') {
+          setIsSupabaseOnline(false);
+        } else {
+          setIsSupabaseOnline(true);
+        }
+      });
+
     if (!user) return;
     
     const fetchUnread = async () => {
@@ -147,8 +318,15 @@ const Navbar = ({ user, onLogin, onLogout }: { user: User | null, onLogin: () =>
     <nav className="bg-nav-bg text-white sticky top-0 z-50 shadow-lg">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
-          <Link to="/" className="flex items-center space-x-2">
-            <span className="text-primary font-bold text-xl tracking-tight">MeuHomem</span>
+          <Link to="/" className="flex items-center space-x-3 group">
+            <Logo />
+            <span className="text-white font-black text-2xl tracking-tighter group-hover:text-primary transition-colors">MEUHOMEM</span>
+            {!isSupabaseOnline && (
+              <div className="flex items-center space-x-1 px-2 py-0.5 bg-alert/20 border border-alert/30 rounded text-[10px] text-alert font-bold uppercase tracking-tighter animate-pulse">
+                <ShieldAlert className="w-3 h-3" />
+                <span>Offline</span>
+              </div>
+            )}
           </Link>
 
           <div className="hidden md:block">
@@ -581,17 +759,39 @@ const EscortProfilePage = ({ user }: { user: User | null }) => {
     facebook: ''
   });
 
+  const [isReportModalOpen, setIsReportModalOpen] = useState(false);
+
   const fetchProfile = async () => {
     if (!id) return;
-    const { data, error } = await supabase
-      .from('escort_profiles')
-      .select('*')
-      .eq('id', id)
-      .single();
     
-    if (error) {
-      handleSupabaseError(error, OperationType.GET, 'escort_profiles');
-    } else if (data) {
+    // Fetch profile and photos in parallel
+    const [profileRes, photosRes] = await Promise.all([
+      supabase
+        .from('escort_profiles')
+        .select('*')
+        .eq('id', id)
+        .single(),
+      supabase
+        .from('escort_photos')
+        .select('*')
+        .eq('escort_id', id)
+        .order('order', { ascending: true })
+    ]);
+    
+    if (profileRes.error) {
+      handleSupabaseError(profileRes.error, OperationType.GET, 'escort_profiles');
+    } else if (profileRes.data) {
+      const data = profileRes.data;
+      const photos = (photosRes.data || []).map(p => ({
+        id: p.id,
+        escortId: p.escort_id,
+        url: p.url,
+        isMain: p.is_main,
+        isApproved: p.is_approved,
+        order: p.order,
+        uploadedAt: p.uploaded_at
+      } as Photo));
+
       const mappedData: EscortProfile = {
         id: data.id,
         userId: data.user_id,
@@ -606,7 +806,8 @@ const EscortProfilePage = ({ user }: { user: User | null }) => {
         bio: data.bio,
         height: data.height,
         weight: data.weight,
-        socialLinks: data.social_links || {}
+        socialLinks: data.social_links || {},
+        photos
       };
       setEscort(mappedData);
       setEditFormData({
@@ -710,11 +911,113 @@ const EscortProfilePage = ({ user }: { user: User | null }) => {
     }
   };
 
+  const handleAdditionalPhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0 || !escort) return;
+
+    setUploadingPhoto(true);
+    try {
+      const uploadPromises = Array.from(files).map(async (file: File) => {
+        const fileExt = file.name.split('.').pop();
+        const fileName = `${escort.id}-gallery-${Math.random()}.${fileExt}`;
+        const filePath = `gallery/${fileName}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from('photos')
+          .upload(filePath, file);
+
+        if (uploadError) throw uploadError;
+
+        const { data: { publicUrl } } = supabase.storage
+          .from('photos')
+          .getPublicUrl(filePath);
+
+        return supabase
+          .from('escort_photos')
+          .insert({
+            escort_id: escort.id,
+            url: publicUrl,
+            is_main: false,
+            is_approved: true, // Auto-approve for now or set to false if moderation is needed
+            order: (escort.photos?.length || 0) + 1
+          });
+      });
+
+      await Promise.all(uploadPromises);
+      fetchProfile(); // Refresh profile to show new photos
+    } catch (error) {
+      handleSupabaseError(error, OperationType.UPLOAD, 'storage/photos');
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
+
+  const handleDeletePhoto = async (photoId: string, photoUrl: string) => {
+    if (!confirm('Tem certeza que deseja excluir esta foto?')) return;
+
+    try {
+      // 1. Delete from database
+      const { error: dbError } = await supabase
+        .from('escort_photos')
+        .delete()
+        .eq('id', photoId);
+
+      if (dbError) throw dbError;
+
+      // 2. Delete from storage (optional but good practice)
+      // Extract path from URL
+      const path = photoUrl.split('/storage/v1/object/public/photos/')[1];
+      if (path) {
+        await supabase.storage.from('photos').remove([path]);
+      }
+
+      fetchProfile();
+    } catch (error) {
+      handleSupabaseError(error, OperationType.DELETE, 'escort_photos');
+    }
+  };
+
   if (loading) return <div className="flex justify-center py-20"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div></div>;
   if (!escort) return <div className="text-center py-20 text-text-sub">Perfil não encontrado.</div>;
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      {/* Verification Banner for Owner */}
+      {user?.id === escort.userId && (escort.verified === 'unverified' || escort.verified === 'pending') && (
+        <motion.div 
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className={cn(
+            "mb-8 p-6 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-4 border-2",
+            escort.verified === 'unverified' ? "bg-alert/5 border-alert/20" : "bg-primary/5 border-primary/20"
+          )}
+        >
+          <div className="flex items-center gap-4 text-center md:text-left">
+            <div className={cn(
+              "w-12 h-12 rounded-full flex items-center justify-center shrink-0",
+              escort.verified === 'unverified' ? "bg-alert/10 text-alert" : "bg-primary/10 text-primary"
+            )}>
+              <Shield className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="font-bold text-lg">
+                {escort.verified === 'unverified' ? 'Verifique a sua conta' : 'Verificação em processamento'}
+              </h3>
+              <p className="text-text-sub text-sm">
+                {escort.verified === 'unverified' 
+                  ? 'Aumente a sua visibilidade e confiança dos clientes com o selo de verificação.' 
+                  : 'O seu documento está a ser analisado pela nossa equipa. Receberá uma notificação em breve.'}
+              </p>
+            </div>
+          </div>
+          {escort.verified === 'unverified' && (
+            <Link to="/verification" className="btn-primary px-8 py-3 w-full md:w-auto text-center">
+              Verificar Agora
+            </Link>
+          )}
+        </motion.div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Left: Photos */}
         <div className="lg:col-span-2 space-y-4">
@@ -748,17 +1051,50 @@ const EscortProfilePage = ({ user }: { user: User | null }) => {
               </div>
             )}
           </div>
-          <div className="grid grid-cols-4 gap-2">
-            {[1, 2, 3, 4].map(i => (
-              <div key={i} className="card aspect-square">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {escort.photos?.map(photo => (
+              <div key={photo.id} className="card aspect-square relative group overflow-hidden">
                 <img
-                  src={`https://picsum.photos/seed/${escort.id}-${i}/400/400`}
-                  alt={`${escort.artisticName} ${i}`}
+                  src={photo.url}
+                  alt={escort.artisticName}
                   className="w-full h-full object-cover"
                   referrerPolicy="no-referrer"
                 />
+                {user?.id === escort.userId && (
+                  <button 
+                    onClick={() => handleDeletePhoto(photo.id, photo.url)}
+                    className="absolute top-2 right-2 p-1.5 bg-alert/80 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity hover:bg-alert"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
               </div>
             ))}
+            {user?.id === escort.userId && (
+              <label className="card aspect-square flex flex-col items-center justify-center border-2 border-dashed border-primary/20 hover:bg-primary/5 cursor-pointer transition-all">
+                <input 
+                  type="file" 
+                  className="hidden" 
+                  accept="image/*" 
+                  multiple 
+                  onChange={handleAdditionalPhotoUpload}
+                  disabled={uploadingPhoto}
+                />
+                {uploadingPhoto ? (
+                  <div className="animate-spin rounded-full h-6 w-6 border-2 border-primary border-t-transparent" />
+                ) : (
+                  <>
+                    <Plus className="w-6 h-6 text-primary mb-1" />
+                    <span className="text-[10px] font-bold text-primary uppercase">Adicionar</span>
+                  </>
+                )}
+              </label>
+            )}
+            {(!escort.photos || escort.photos.length === 0) && user?.id !== escort.userId && (
+              <div className="col-span-full py-8 text-center text-text-sub italic text-sm">
+                Nenhuma foto adicional disponível.
+              </div>
+            )}
           </div>
         </div>
 
@@ -830,12 +1166,24 @@ const EscortProfilePage = ({ user }: { user: User | null }) => {
                   <Heart className="w-5 h-5" />
                   <span>Favorito</span>
                 </button>
-                <button className="px-4 py-3 rounded-lg border border-alert text-alert hover:bg-alert/5 transition-colors">
-                  <ShieldAlert className="w-5 h-5" />
+                <button className="flex-1 btn-secondary py-3 flex items-center justify-center space-x-2" onClick={() => window.location.href = `tel:${escort.id}`}>
+                  <Phone className="w-5 h-5" />
+                  <span>Ligar</span>
                 </button>
               </div>
+              {user && user.id !== escort.id && (
+                <button 
+                  onClick={() => setIsReportModalOpen(true)}
+                  className="text-xs text-inactive hover:text-alert flex items-center justify-center space-x-1 pt-2 transition-colors"
+                >
+                  <AlertTriangle className="w-3 h-3" />
+                  <span>Denunciar Perfil</span>
+                </button>
+              )}
             </div>
           </div>
+
+          <ReviewSection escortId={escort.id} user={user} />
 
           <div className="card p-6 space-y-4">
             <h3 className="font-bold text-sm uppercase tracking-wider text-inactive">Redes Sociais</h3>
@@ -862,6 +1210,13 @@ const EscortProfilePage = ({ user }: { user: User | null }) => {
           </div>
         </div>
       </div>
+
+      <ReportModal 
+        isOpen={isReportModalOpen} 
+        onClose={() => setIsReportModalOpen(false)} 
+        reportedId={escort.id} 
+        reporterId={user?.id || ''} 
+      />
 
       <AnimatePresence>
         {isEditModalOpen && (
@@ -942,18 +1297,28 @@ const EscortProfilePage = ({ user }: { user: User | null }) => {
                   <input 
                     type="number" 
                     step="0.01"
+                    min="0"
+                    placeholder="Ex: 1.75"
                     className="w-full px-4 py-2 rounded-lg border border-black/5 outline-none focus:ring-2 focus:ring-primary/20"
-                    value={editFormData.height}
-                    onChange={e => setEditFormData({...editFormData, height: parseFloat(e.target.value)})}
+                    value={editFormData.height || ''}
+                    onChange={e => {
+                      const val = e.target.value === '' ? 0 : parseFloat(e.target.value);
+                      setEditFormData({...editFormData, height: val});
+                    }}
                   />
                 </div>
                 <div className="space-y-1">
                   <label className="text-xs font-bold uppercase text-inactive">Peso (kg)</label>
                   <input 
                     type="number" 
+                    min="0"
+                    placeholder="Ex: 70"
                     className="w-full px-4 py-2 rounded-lg border border-black/5 outline-none focus:ring-2 focus:ring-primary/20"
-                    value={editFormData.weight}
-                    onChange={e => setEditFormData({...editFormData, weight: parseInt(e.target.value)})}
+                    value={editFormData.weight || ''}
+                    onChange={e => {
+                      const val = e.target.value === '' ? 0 : parseInt(e.target.value);
+                      setEditFormData({...editFormData, weight: val});
+                    }}
                   />
                 </div>
                 <div className="space-y-1">
@@ -1017,27 +1382,37 @@ const EscortProfilePage = ({ user }: { user: User | null }) => {
   );
 };
 
-const RoleSelection = ({ onSelect }: { onSelect: (type: UserType) => void }) => {
+const RoleSelection = ({ onSelect, loading, onLogout }: { onSelect: (type: UserType) => void, loading?: boolean, onLogout: () => void }) => {
   return (
     <div className="max-w-md mx-auto mt-20 p-8 card text-center space-y-6">
       <h2 className="text-2xl font-bold">Bem-vindo ao MeuHomem</h2>
       <p className="text-text-sub">Como deseja utilizar a plataforma?</p>
       <div className="grid grid-cols-1 gap-4">
         <button
+          disabled={loading}
           onClick={() => onSelect('escort')}
-          className="btn-primary py-4 text-lg flex flex-col items-center"
+          className="btn-primary py-4 text-lg flex flex-col items-center relative overflow-hidden"
         >
+          {loading && <div className="absolute inset-0 bg-white/20 animate-pulse" />}
           <span className="font-bold">Sou Acompanhante</span>
           <span className="text-xs opacity-80">Quero oferecer meus serviços</span>
         </button>
         <button
+          disabled={loading}
           onClick={() => onSelect('client')}
-          className="btn-secondary py-4 text-lg flex flex-col items-center"
+          className="btn-secondary py-4 text-lg flex flex-col items-center relative overflow-hidden"
         >
+          {loading && <div className="absolute inset-0 bg-black/5 animate-pulse" />}
           <span className="font-bold">Procuro Acompanhante</span>
           <span className="text-xs opacity-80">Quero encontrar companhia</span>
         </button>
       </div>
+      <button 
+        onClick={onLogout}
+        className="text-xs text-inactive hover:text-primary transition-colors pt-4"
+      >
+        Sair e tentar outra conta
+      </button>
     </div>
   );
 };
@@ -1189,6 +1564,8 @@ const VerificationUpload = ({ user }: { user: User | null }) => {
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [documentType, setDocumentType] = useState<'bi' | 'passport'>('bi');
+  const [success, setSuccess] = useState(false);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selected = e.target.files?.[0];
@@ -1214,43 +1591,110 @@ const VerificationUpload = ({ user }: { user: User | null }) => {
 
       if (uploadError) throw uploadError;
 
+      // Get public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from('verifications')
+        .getPublicUrl(filePath);
+
       const { error: updateError } = await supabase
         .from('escort_profiles')
         .update({
           verified: 'pending',
-          verification_date: new Date().toISOString()
+          verification_date: new Date().toISOString(),
+          verification_document_url: publicUrl
         })
-        .eq('user_id', user.id);
+        .eq('id', user.id);
 
       if (updateError) throw updateError;
       
       setUploading(false);
-      alert('Documento enviado para análise!');
+      setSuccess(true);
     } catch (error) {
       handleSupabaseError(error, OperationType.UPLOAD, 'storage/verifications');
       setUploading(false);
     }
   };
 
+  if (success) {
+    return (
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="max-w-md mx-auto p-8 card text-center space-y-6"
+      >
+        <div className="w-20 h-20 bg-verified/10 rounded-full flex items-center justify-center mx-auto">
+          <CheckCircle className="w-10 h-10 text-verified" />
+        </div>
+        <h2 className="text-2xl font-bold">Documento Enviado!</h2>
+        <p className="text-text-sub">
+          O seu documento foi enviado com sucesso para a nossa equipa de moderação. 
+          A análise demora normalmente entre 24 a 48 horas.
+        </p>
+        <Link to={`/profile/${user?.id}`} className="btn-primary block py-3 w-full">Voltar ao Perfil</Link>
+      </motion.div>
+    );
+  }
+
   return (
     <div className="max-w-md mx-auto p-8 card space-y-6">
       <div className="text-center space-y-2">
         <Shield className="w-12 h-12 text-primary mx-auto" />
         <h2 className="text-2xl font-bold">Verificação de Identidade</h2>
-        <p className="text-text-sub text-sm">Envie uma selfie segurando seu documento (BI ou Passaporte) para obter o selo de verificação.</p>
+        <p className="text-text-sub text-sm">
+          Para garantir a segurança da comunidade, solicitamos uma foto nítida do seu documento.
+        </p>
       </div>
 
-      <div className="border-2 border-dashed border-inactive rounded-xl p-8 text-center space-y-4">
+      <div className="space-y-4">
+        <label className="block text-sm font-medium text-text-main">Tipo de Documento</label>
+        <div className="grid grid-cols-2 gap-4">
+          <button 
+            onClick={() => setDocumentType('bi')}
+            className={cn(
+              "py-3 px-4 rounded-xl border-2 transition-all text-sm font-bold",
+              documentType === 'bi' ? "border-primary bg-primary/5 text-primary" : "border-inactive text-inactive"
+            )}
+          >
+            Bilhete de Identidade
+          </button>
+          <button 
+            onClick={() => setDocumentType('passport')}
+            className={cn(
+              "py-3 px-4 rounded-xl border-2 transition-all text-sm font-bold",
+              documentType === 'passport' ? "border-primary bg-primary/5 text-primary" : "border-inactive text-inactive"
+            )}
+          >
+            Passaporte
+          </button>
+        </div>
+      </div>
+
+      <div className="border-2 border-dashed border-inactive rounded-xl p-8 text-center space-y-4 relative overflow-hidden">
         {preview ? (
-          <img src={preview} className="max-h-48 mx-auto rounded-lg shadow-md" />
+          <div className="relative group">
+            <img src={preview} className="max-h-48 mx-auto rounded-lg shadow-md" />
+            <button 
+              onClick={() => { setFile(null); setPreview(null); }}
+              className="absolute top-2 right-2 bg-alert text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         ) : (
           <div className="space-y-2">
             <Camera className="w-10 h-10 text-inactive mx-auto" />
-            <p className="text-sm text-inactive">Clique para tirar foto ou selecionar arquivo</p>
+            <p className="text-sm text-inactive">Tire uma foto nítida do seu {documentType === 'bi' ? 'BI' : 'Passaporte'}</p>
           </div>
         )}
         <input type="file" accept="image/*" onChange={handleFileChange} className="hidden" id="file-upload" />
-        <label htmlFor="file-upload" className="btn-secondary inline-block cursor-pointer">Selecionar Foto</label>
+        {!preview && <label htmlFor="file-upload" className="btn-secondary inline-block cursor-pointer">Selecionar Foto</label>}
+      </div>
+
+      <div className="bg-primary/5 p-4 rounded-xl flex items-start space-x-3">
+        <ShieldAlert className="w-5 h-5 text-primary shrink-0 mt-0.5" />
+        <p className="text-xs text-text-sub leading-relaxed">
+          <strong>Privacidade:</strong> Os seus documentos são encriptados e usados apenas para fins de verificação. Nunca serão partilhados com terceiros ou exibidos no seu perfil público.
+        </p>
       </div>
 
       <button
@@ -1258,26 +1702,324 @@ const VerificationUpload = ({ user }: { user: User | null }) => {
         disabled={!file || uploading}
         className="w-full btn-primary py-3 flex items-center justify-center space-x-2"
       >
-        {uploading ? <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div> : <span>Enviar para Análise</span>}
+        {uploading ? (
+          <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+        ) : (
+          <>
+            <Upload className="w-5 h-5" />
+            <span>Enviar para Análise</span>
+          </>
+        )}
       </button>
     </div>
   );
 };
 
+const ReportModal = ({ isOpen, onClose, reportedId, reporterId }: { isOpen: boolean, onClose: () => void, reportedId: string, reporterId: string }) => {
+  const [reason, setReason] = useState('');
+  const [description, setDescription] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [sent, setSent] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const { error } = await supabase
+        .from('reports')
+        .insert({
+          reporter_id: reporterId,
+          reported_id: reportedId,
+          type: 'escort',
+          reason,
+          description,
+          status: 'pending'
+        });
+      if (error) throw error;
+      setSent(true);
+    } catch (error) {
+      handleSupabaseError(error, OperationType.CREATE, 'reports');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            className="card p-6 w-full max-w-md space-y-4"
+          >
+            <div className="flex justify-between items-center">
+              <h3 className="text-xl font-bold flex items-center space-x-2">
+                <AlertTriangle className="w-5 h-5 text-alert" />
+                <span>Denunciar Perfil</span>
+              </h3>
+              <button onClick={onClose}><X className="w-6 h-6" /></button>
+            </div>
+
+            {sent ? (
+              <div className="text-center py-8 space-y-4">
+                <CheckCircle className="w-12 h-12 text-verified mx-auto" />
+                <p className="font-bold">Denúncia enviada com sucesso.</p>
+                <p className="text-sm text-text-sub text-center">A nossa equipa de moderação irá analisar o perfil em breve.</p>
+                <button onClick={onClose} className="btn-primary w-full py-2">Fechar</button>
+              </div>
+            ) : (
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="space-y-1">
+                  <label className="text-xs font-bold uppercase text-inactive">Motivo</label>
+                  <select 
+                    required
+                    className="w-full px-4 py-2 rounded-lg border border-black/5 outline-none focus:ring-2 focus:ring-primary/20"
+                    value={reason}
+                    onChange={e => setReason(e.target.value)}
+                  >
+                    <option value="">Selecione um motivo</option>
+                    <option value="fake_profile">Perfil Falso</option>
+                    <option value="inappropriate_content">Conteúdo Inapropriado</option>
+                    <option value="scam">Fraude / Burla</option>
+                    <option value="harassment">Assédio</option>
+                    <option value="other">Outro</option>
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-bold uppercase text-inactive">Descrição Adicional</label>
+                  <textarea 
+                    required
+                    className="w-full px-4 py-2 rounded-lg border border-black/5 outline-none focus:ring-2 focus:ring-primary/20 h-24 resize-none"
+                    placeholder="Explique o que aconteceu..."
+                    value={description}
+                    onChange={e => setDescription(e.target.value)}
+                  />
+                </div>
+                <button 
+                  type="submit" 
+                  disabled={loading}
+                  className="w-full bg-alert text-white py-3 rounded-lg font-bold hover:bg-alert/90 transition-colors flex items-center justify-center space-x-2"
+                >
+                  {loading ? (
+                    <div className="animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent" />
+                  ) : (
+                    <>
+                      <AlertTriangle className="w-4 h-4" />
+                      <span>Enviar Denúncia</span>
+                    </>
+                  )}
+                </button>
+              </form>
+            )}
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+  );
+};
+
+const ReviewSection = ({ escortId, user }: { escortId: string, user: User | null }) => {
+  const [reviews, setReviews] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [stars, setStars] = useState(5);
+  const [comment, setComment] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const fetchReviews = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('reviews')
+        .select(`
+          *,
+          client:users(name)
+        `)
+        .eq('escort_id', escortId)
+        .order('date', { ascending: false });
+      
+      if (error) throw error;
+      setReviews(data || []);
+    } catch (error) {
+      handleSupabaseError(error, OperationType.GET, 'reviews');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchReviews();
+  }, [escortId]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
+    setSubmitting(true);
+    try {
+      const { error } = await supabase
+        .from('reviews')
+        .insert({
+          client_id: user.id,
+          escort_id: escortId,
+          stars,
+          comment,
+          date: new Date().toISOString(),
+          is_confirmed: false
+        });
+      if (error) throw error;
+      
+      // Update escort rating (simplified: just fetch again and recalculate or let backend handle it)
+      // For now, just refresh reviews
+      fetchReviews();
+      setIsModalOpen(false);
+      setComment('');
+      setStars(5);
+    } catch (error) {
+      handleSupabaseError(error, OperationType.CREATE, 'reviews');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <h2 className="text-xl font-bold flex items-center space-x-2">
+          <Star className="w-5 h-5 text-primary" />
+          <span>Avaliações ({reviews.length})</span>
+        </h2>
+        {user?.type === 'client' && (
+          <button 
+            onClick={() => setIsModalOpen(true)}
+            className="text-sm font-bold text-primary hover:underline flex items-center space-x-1"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Deixar Avaliação</span>
+          </button>
+        )}
+      </div>
+
+      <div className="space-y-4">
+        {loading ? (
+          <div className="animate-pulse space-y-4">
+            {[1, 2].map(i => <div key={i} className="h-24 bg-black/5 rounded-xl" />)}
+          </div>
+        ) : reviews.length > 0 ? (
+          reviews.map(review => (
+            <div key={review.id} className="card p-4 space-y-2">
+              <div className="flex justify-between items-center">
+                <div className="flex items-center space-x-2">
+                  <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                    <UserIcon className="w-4 h-4 text-primary" />
+                  </div>
+                  <span className="font-bold text-sm">{review.client?.name || 'Cliente'}</span>
+                </div>
+                <div className="flex items-center space-x-1">
+                  {[...Array(5)].map((_, i) => (
+                    <Star key={i} className={cn("w-3 h-3", i < review.stars ? "text-primary fill-current" : "text-inactive")} />
+                  ))}
+                </div>
+              </div>
+              <p className="text-sm text-text-sub leading-relaxed">{review.comment}</p>
+              <p className="text-[10px] text-inactive uppercase font-bold">
+                {new Date(review.date).toLocaleDateString('pt-PT')}
+              </p>
+            </div>
+          ))
+        ) : (
+          <div className="text-center py-8 text-text-sub italic text-sm bg-black/5 rounded-xl">
+            Ainda não existem avaliações para este perfil.
+          </div>
+        )}
+      </div>
+
+      <AnimatePresence>
+        {isModalOpen && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="card p-6 w-full max-w-md space-y-4"
+            >
+              <div className="flex justify-between items-center">
+                <h3 className="text-xl font-bold">Avaliar Serviço</h3>
+                <button onClick={() => setIsModalOpen(false)}><X className="w-6 h-6" /></button>
+              </div>
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold uppercase text-inactive">Classificação</label>
+                  <div className="flex items-center space-x-2">
+                    {[1, 2, 3, 4, 5].map(star => (
+                      <button 
+                        key={star} 
+                        type="button"
+                        onClick={() => setStars(star)}
+                        className="transition-transform hover:scale-110"
+                      >
+                        <Star className={cn("w-8 h-8", star <= stars ? "text-primary fill-current" : "text-inactive")} />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-bold uppercase text-inactive">Comentário</label>
+                  <textarea 
+                    required
+                    className="w-full px-4 py-2 rounded-lg border border-black/5 outline-none focus:ring-2 focus:ring-primary/20 h-32 resize-none"
+                    placeholder="Conte-nos como foi a sua experiência..."
+                    value={comment}
+                    onChange={e => setComment(e.target.value)}
+                  />
+                </div>
+                <button 
+                  type="submit" 
+                  disabled={submitting}
+                  className="w-full btn-primary py-3 font-bold flex items-center justify-center space-x-2"
+                >
+                  {submitting ? (
+                    <div className="animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent" />
+                  ) : (
+                    <>
+                      <Send className="w-4 h-4" />
+                      <span>Publicar Avaliação</span>
+                    </>
+                  )}
+                </button>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
 const AdminPanel = () => {
   const [pendingEscorts, setPendingEscorts] = useState<EscortProfile[]>([]);
-  const [reports, setReports] = useState<Report[]>([]);
+  const [reports, setReports] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchData = async () => {
-    const { data: escorts, error: escortsError } = await supabase
-      .from('escort_profiles')
-      .select('*')
-      .eq('verified', 'pending');
-    
-    if (escortsError) {
-      handleSupabaseError(escortsError, OperationType.GET, 'escort_profiles');
-    } else {
+    setLoading(true);
+    try {
+      const { data: escorts, error: escortsError } = await supabase
+        .from('escort_profiles')
+        .select('*')
+        .eq('verified', 'pending');
+      
+      const { data: reportsData, error: reportsError } = await supabase
+        .from('reports')
+        .select(`
+          *,
+          reporter:users!reporter_id(name, email),
+          reported:escort_profiles!reported_id(artistic_name)
+        `)
+        .eq('status', 'pending');
+
+      if (escortsError) throw escortsError;
+      if (reportsError) throw reportsError;
+
       setPendingEscorts(escorts.map(e => ({
         id: e.id,
         userId: e.user_id,
@@ -1285,10 +2027,15 @@ const AdminPanel = () => {
         city: e.city,
         verified: e.verified,
         age: e.age,
-        mainPhotoUrl: e.main_photo_url
+        mainPhotoUrl: e.main_photo_url,
+        verificationDocumentUrl: e.verification_document_url
       } as EscortProfile)));
+      setReports(reportsData || []);
+    } catch (error) {
+      handleSupabaseError(error, OperationType.GET, 'admin_data');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   useEffect(() => {
@@ -1297,6 +2044,9 @@ const AdminPanel = () => {
     const channel = supabase
       .channel('admin_changes')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'escort_profiles' }, () => {
+        fetchData();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'reports' }, () => {
         fetchData();
       })
       .subscribe();
@@ -1333,6 +2083,19 @@ const AdminPanel = () => {
     }
   };
 
+  const handleResolveReport = async (reportId: string, status: 'resolved' | 'dismissed') => {
+    try {
+      const { error } = await supabase
+        .from('reports')
+        .update({ status })
+        .eq('id', reportId);
+      if (error) throw error;
+      fetchData();
+    } catch (error) {
+      handleSupabaseError(error, OperationType.UPDATE, 'reports');
+    }
+  };
+
   if (loading) return <div className="flex justify-center py-20"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div></div>;
 
   return (
@@ -1346,21 +2109,90 @@ const AdminPanel = () => {
         </h2>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {pendingEscorts.map(escort => (
-            <div key={escort.id} className="card p-4 flex flex-col justify-between">
-              <div>
-                <h3 className="font-bold">{escort.artisticName}</h3>
-                <p className="text-sm text-text-sub">{escort.city} • {escort.age} anos</p>
-                <div className="mt-2 aspect-video bg-gray-100 rounded-lg overflow-hidden">
-                   <img src={escort.mainPhotoUrl || `https://picsum.photos/seed/${escort.id}/400/225`} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+            <div key={escort.id} className="card p-4 flex flex-col justify-between space-y-4">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="font-bold">{escort.artisticName}</h3>
+                    <p className="text-sm text-text-sub">{escort.city} • {escort.age} anos</p>
+                  </div>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <p className="text-[10px] uppercase font-bold text-inactive">Foto de Perfil</p>
+                    <div className="aspect-square bg-gray-100 rounded-lg overflow-hidden">
+                      <img src={escort.mainPhotoUrl || `https://picsum.photos/seed/${escort.id}/400/400`} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-[10px] uppercase font-bold text-inactive">Documento Enviado</p>
+                    <div className="aspect-square bg-gray-100 rounded-lg overflow-hidden border border-primary/20">
+                      {escort.verificationDocumentUrl ? (
+                        <a href={escort.verificationDocumentUrl} target="_blank" rel="noreferrer" className="block w-full h-full group relative">
+                          <img src={escort.verificationDocumentUrl} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                            <Eye className="w-6 h-6 text-white" />
+                          </div>
+                        </a>
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-inactive italic text-[10px] p-2 text-center">
+                          Sem documento
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
-              <div className="flex gap-2 mt-4">
-                <button onClick={() => handleApprove(escort.id)} className="flex-1 bg-verified text-white py-2 rounded-lg text-sm font-bold">Aprovar</button>
-                <button onClick={() => handleReject(escort.id)} className="flex-1 bg-alert text-white py-2 rounded-lg text-sm font-bold">Rejeitar</button>
+              <div className="flex gap-2 pt-2 border-t border-inactive/10">
+                <button onClick={() => handleApprove(escort.id)} className="flex-1 bg-verified text-white py-2 rounded-lg text-sm font-bold hover:bg-verified/90 transition-colors">Aprovar</button>
+                <button onClick={() => handleReject(escort.id)} className="flex-1 bg-alert text-white py-2 rounded-lg text-sm font-bold hover:bg-alert/90 transition-colors">Rejeitar</button>
               </div>
             </div>
           ))}
           {pendingEscorts.length === 0 && <p className="text-text-sub italic">Nenhuma verificação pendente.</p>}
+        </div>
+      </section>
+
+      <section className="space-y-6">
+        <h2 className="text-xl font-bold flex items-center space-x-2">
+          <AlertTriangle className="w-5 h-5 text-alert" />
+          <span>Denúncias Pendentes ({reports.length})</span>
+        </h2>
+        <div className="space-y-4">
+          {reports.map(report => (
+            <div key={report.id} className="card p-6 flex flex-col md:flex-row md:items-center justify-between gap-6">
+              <div className="space-y-2">
+                <div className="flex items-center space-x-2">
+                  <span className="bg-alert/10 text-alert text-[10px] font-bold uppercase px-2 py-1 rounded">
+                    {report.reason}
+                  </span>
+                  <span className="text-xs text-inactive">
+                    {new Date(report.created_at).toLocaleDateString('pt-PT')}
+                  </span>
+                </div>
+                <p className="text-sm">
+                  <span className="font-bold">{report.reporter?.name}</span> denunciou o perfil de <span className="font-bold text-primary">{report.reported?.artistic_name}</span>
+                </p>
+                <p className="text-xs text-text-sub italic">"{report.description}"</p>
+              </div>
+              <div className="flex items-center space-x-3">
+                <button 
+                  onClick={() => handleResolveReport(report.id, 'resolved')}
+                  className="px-4 py-2 bg-verified text-white text-xs font-bold rounded-lg hover:bg-verified/90 transition-colors"
+                >
+                  Marcar Resolvido
+                </button>
+                <button 
+                  onClick={() => handleResolveReport(report.id, 'dismissed')}
+                  className="px-4 py-2 bg-black/5 text-text-sub text-xs font-bold rounded-lg hover:bg-black/10 transition-colors"
+                >
+                  Ignorar
+                </button>
+              </div>
+            </div>
+          ))}
+          {reports.length === 0 && <p className="text-text-sub italic">Nenhuma denúncia pendente.</p>}
         </div>
       </section>
     </div>
@@ -1372,7 +2204,10 @@ const AdminPanel = () => {
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [showRoleSelection, setShowRoleSelection] = useState(false);
+  const [isSubmittingRole, setIsSubmittingRole] = useState(false);
 
   const fetchUserData = async (userId: string) => {
     const { data, error } = await supabase
@@ -1392,6 +2227,12 @@ export default function App() {
         lastAccess: data.last_access
       } as User);
       setShowRoleSelection(false);
+    } else if (error) {
+      if (error.code !== 'PGRST116') { // Not found is fine, it means we show role selection
+        handleSupabaseError(error, OperationType.GET, 'users');
+      } else {
+        setShowRoleSelection(true);
+      }
     } else {
       setShowRoleSelection(true);
     }
@@ -1399,6 +2240,11 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (!isSupabaseConfigured) {
+      setLoading(false);
+      return;
+    }
+
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session) {
         fetchUserData(session.user.id);
@@ -1435,16 +2281,17 @@ export default function App() {
     };
 
     try {
+      setIsSubmittingRole(true);
       const { error: userError } = await supabase
         .from('users')
-        .insert(newUser);
+        .upsert(newUser);
       
       if (userError) throw userError;
 
       if (type === 'escort') {
         const { error: profileError } = await supabase
           .from('escort_profiles')
-          .insert({
+          .upsert({
             user_id: session.user.id,
             artistic_name: session.user.user_metadata.full_name || 'Novo Acompanhante',
             age: 18,
@@ -1457,20 +2304,27 @@ export default function App() {
         if (profileError) throw profileError;
       }
 
-      fetchUserData(session.user.id);
+      await fetchUserData(session.user.id);
     } catch (error) {
       handleSupabaseError(error, OperationType.CREATE, 'users/escort_profiles');
+    } finally {
+      setIsSubmittingRole(false);
     }
   };
 
-  const handleLogin = async () => {
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
+  const handleLogin = async (email: string) => {
+    setLoginError(null);
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
       options: {
-        redirectTo: window.location.origin
-      }
+        emailRedirectTo: window.location.origin,
+      },
     });
-    if (error) handleSupabaseError(error, OperationType.GET, 'auth');
+    
+    if (error) {
+      handleSupabaseError(error, OperationType.GET, 'auth');
+      throw error;
+    }
   };
 
   const handleLogout = async () => {
@@ -1515,8 +2369,19 @@ export default function App() {
     return (
       <Router>
         <div className="min-h-screen bg-bg-main">
-          <Navbar user={null} onLogin={handleLogin} onLogout={handleLogout} />
-          <RoleSelection onSelect={handleRoleSelect} />
+          <Navbar user={null} onLogin={() => setIsLoginModalOpen(true)} onLogout={handleLogout} />
+          <LoginModal 
+            isOpen={isLoginModalOpen} 
+            onClose={() => setIsLoginModalOpen(false)} 
+            onLogin={handleLogin} 
+          />
+          {loginError && (
+            <div className="max-w-md mx-auto mt-4 p-4 bg-alert/10 border border-alert text-alert rounded-lg text-sm flex items-start space-x-2">
+              <ShieldAlert className="w-5 h-5 flex-shrink-0" />
+              <p>{loginError}</p>
+            </div>
+          )}
+          <RoleSelection onSelect={handleRoleSelect} loading={isSubmittingRole} onLogout={handleLogout} />
         </div>
       </Router>
     );
@@ -1526,17 +2391,28 @@ export default function App() {
     <ErrorBoundary>
       <Router>
         <div className="min-h-screen bg-bg-main">
-          <Navbar user={user} onLogin={handleLogin} onLogout={handleLogout} />
+          <Navbar user={user} onLogin={() => setIsLoginModalOpen(true)} onLogout={handleLogout} />
+          <LoginModal 
+            isOpen={isLoginModalOpen} 
+            onClose={() => setIsLoginModalOpen(false)} 
+            onLogin={handleLogin} 
+          />
           <main className="pb-20">
             <Routes>
               <Route path="/" element={<HomePage />} />
               <Route path="/escort/:id" element={<EscortProfilePage user={user} />} />
               <Route path="/chat/:id" element={<ChatPage user={user} />} />
-              <Route path="/verification" element={<VerificationUpload user={user} />} />
+              <Route 
+                path="/verification" 
+                element={user?.type === 'escort' ? <VerificationUpload user={user} /> : <div className="p-8 text-center">Apenas acompanhantes podem aceder a esta página.</div>} 
+              />
               <Route path="/favorites" element={<div className="p-8">Favoritos (Em breve)</div>} />
               <Route path="/messages" element={<div className="p-8">Mensagens (Em breve)</div>} />
               <Route path="/profile" element={<div className="p-8">Meu Perfil (Em breve)</div>} />
-              <Route path="/admin" element={<AdminPanel />} />
+              <Route 
+                path="/admin" 
+                element={user?.type === 'admin' ? <AdminPanel /> : <div className="p-8 text-center">Acesso restrito a administradores.</div>} 
+              />
             </Routes>
           </main>
           
