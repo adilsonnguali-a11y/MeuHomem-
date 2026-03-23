@@ -33,6 +33,7 @@ export interface EscortProfile {
   verificationDate?: string;
   views: number;
   rating: number;
+  mainPhotoUrl?: string;
   socialLinks?: {
     instagram?: string;
     facebook?: string;

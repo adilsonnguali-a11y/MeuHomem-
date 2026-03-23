@@ -1,10 +1,8 @@
 import React, { useState, useEffect, Component, ReactNode } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation, useParams } from 'react-router-dom';
-import { onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut } from 'firebase/auth';
-import { doc, getDoc, onSnapshot, collection, query, where, limit, orderBy, updateDoc, setDoc, addDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
-import { auth, db } from './firebase';
-import { User, EscortProfile, UserType, Report, UserStatus, VerificationStatus, BodyType, ReportStatus, Message } from './types';
-import { Search, User as UserIcon, MessageSquare, Heart, Shield, LogOut, Menu, X, Star, CheckCircle, ShieldAlert, Instagram, Facebook, Phone, Calendar, MapPin, Ruler, Weight, Eye, Send, Image as ImageIcon, Camera } from 'lucide-react';
+import { supabase, isSupabaseConfigured } from './supabase';
+import { User, EscortProfile, UserType, Report, UserStatus, VerificationStatus, BodyType, ReportStatus, Message, Price } from './types';
+import { Search, User as UserIcon, MessageSquare, Heart, Shield, LogOut, Menu, X, Star, CheckCircle, ShieldAlert, Instagram, Facebook, Phone, Calendar, MapPin, Ruler, Weight, Eye, Send, Image as ImageIcon, Camera, Plus, Edit2, Trash2, Upload } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -23,48 +21,31 @@ enum OperationType {
   LIST = 'list',
   GET = 'get',
   WRITE = 'write',
+  UPLOAD = 'upload'
 }
 
-interface FirestoreErrorInfo {
+interface SupabaseErrorInfo {
   error: string;
   operationType: OperationType;
-  path: string | null;
+  table: string | null;
   authInfo: {
     userId: string | undefined;
     email: string | null | undefined;
-    emailVerified: boolean | undefined;
-    isAnonymous: boolean | undefined;
-    tenantId: string | null | undefined;
-    providerInfo: {
-      providerId: string;
-      displayName: string | null;
-      email: string | null;
-      photoUrl: string | null;
-    }[];
   }
 }
 
-function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+function handleSupabaseError(error: any, operationType: OperationType, table: string | null) {
+  const errInfo: SupabaseErrorInfo = {
+    error: error?.message || String(error),
     authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData.map(provider => ({
-        providerId: provider.providerId,
-        displayName: provider.displayName,
-        email: provider.email,
-        photoUrl: provider.photoURL
-      })) || []
+      userId: undefined, // Will be filled if possible
+      email: undefined
     },
     operationType,
-    path
+    table
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  console.error('Supabase Error: ', JSON.stringify(errInfo));
+  // We can't easily get current user here without async, but it's logged in the console if needed
 }
 
 class ErrorBoundary extends Component<any, any> {
@@ -123,14 +104,35 @@ const Navbar = ({ user, onLogin, onLogout }: { user: User | null, onLogin: () =>
 
   useEffect(() => {
     if (!user) return;
-    // Simple query for unread messages where user is receiver
-    const q = query(
-      collection(db, 'messages'), // This would need a better structure for global unread, but for demo:
-      where('receiverId', '==', user.id),
-      where('isRead', '==', false)
-    );
-    // Note: The current chat structure is subcollections, so global unread is harder.
-    // We'll mock it for now or just show a static dot if messages exists.
+    
+    const fetchUnread = async () => {
+      const { count, error } = await supabase
+        .from('messages')
+        .select('*', { count: 'exact', head: true })
+        .eq('receiver_id', user.id)
+        .eq('is_read', false);
+      
+      if (!error && count !== null) setUnreadCount(count);
+    };
+
+    fetchUnread();
+    
+    // Realtime subscription for unread messages
+    const channel = supabase
+      .channel('unread_messages')
+      .on('postgres_changes', { 
+        event: 'INSERT', 
+        schema: 'public', 
+        table: 'messages',
+        filter: `receiver_id=eq.${user.id}`
+      }, () => {
+        fetchUnread();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [user]);
 
   const navLinks = [
@@ -249,15 +251,46 @@ const HomePage = () => {
   const cities = ['Luanda', 'Benguela', 'Lubango', 'Huambo', 'Lobito', 'Soyo'];
 
   useEffect(() => {
-    const q = query(collection(db, 'escort_profiles'), where('verified', '==', 'verified'), limit(20));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as EscortProfile));
-      setEscorts(data);
+    const fetchEscorts = async () => {
+      const { data, error } = await supabase
+        .from('escort_profiles')
+        .select('*')
+        .eq('verified', 'verified')
+        .limit(20);
+
+      if (error) {
+        handleSupabaseError(error, OperationType.GET, 'escort_profiles');
+      } else {
+        // Map snake_case to camelCase if needed, but let's assume types match or we map them
+        const mappedData = data.map(item => ({
+          id: item.id,
+          userId: item.user_id,
+          artisticName: item.artistic_name,
+          age: item.age,
+          city: item.city,
+          verified: item.verified,
+          rating: item.rating,
+          views: item.views,
+          mainPhotoUrl: item.main_photo_url,
+          bodyType: item.body_type
+        } as EscortProfile));
+        setEscorts(mappedData);
+      }
       setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'escort_profiles');
-    });
-    return () => unsubscribe();
+    };
+
+    fetchEscorts();
+
+    const channel = supabase
+      .channel('escort_profiles_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'escort_profiles' }, () => {
+        fetchEscorts();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   const filteredEscorts = escorts.filter(e => 
@@ -301,7 +334,7 @@ const HomePage = () => {
             <Link key={escort.id} to={`/escort/${escort.id}`} className="card group hover:shadow-md transition-all">
               <div className="aspect-[3/4] bg-gray-200 relative overflow-hidden">
                 <img
-                  src={`https://picsum.photos/seed/${escort.id}/600/800`}
+                  src={escort.mainPhotoUrl || `https://picsum.photos/seed/${escort.id}/600/800`}
                   alt={escort.artisticName}
                   className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                   referrerPolicy="no-referrer"
@@ -334,23 +367,348 @@ const HomePage = () => {
   );
 };
 
+const ServicesSection = ({ escortId, isOwner }: { escortId: string, isOwner: boolean }) => {
+  const [services, setServices] = useState<Price[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingService, setEditingService] = useState<Price | null>(null);
+  const [formData, setFormData] = useState({ service: '', value: '', description: '' });
+
+  const fetchServices = async () => {
+    const { data, error } = await supabase
+      .from('prices')
+      .select('*')
+      .eq('escort_id', escortId);
+    
+    if (error) {
+      handleSupabaseError(error, OperationType.GET, 'prices');
+    } else {
+      setServices(data.map(item => ({
+        id: item.id,
+        escortId: item.escort_id,
+        service: item.service,
+        value: item.value,
+        description: item.description
+      } as Price)));
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    fetchServices();
+    
+    const channel = supabase
+      .channel(`services_${escortId}`)
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'prices',
+        filter: `escort_id=eq.${escortId}`
+      }, () => {
+        fetchServices();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [escortId]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      if (editingService) {
+        const { error } = await supabase
+          .from('prices')
+          .update({
+            service: formData.service,
+            value: formData.value,
+            description: formData.description
+          })
+          .eq('id', editingService.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('prices')
+          .insert({
+            escort_id: escortId,
+            service: formData.service,
+            value: formData.value,
+            description: formData.description
+          });
+        if (error) throw error;
+      }
+      setIsModalOpen(false);
+      setEditingService(null);
+      setFormData({ service: '', value: '', description: '' });
+    } catch (error) {
+      handleSupabaseError(error, editingService ? OperationType.UPDATE : OperationType.CREATE, 'prices');
+    }
+  };
+
+  const handleDelete = async (serviceId: string) => {
+    if (!confirm('Tem certeza que deseja excluir este serviço?')) return;
+    try {
+      const { error } = await supabase
+        .from('prices')
+        .delete()
+        .eq('id', serviceId);
+      if (error) throw error;
+    } catch (error) {
+      handleSupabaseError(error, OperationType.DELETE, 'prices');
+    }
+  };
+
+  const openEdit = (service: Price) => {
+    setEditingService(service);
+    setFormData({ service: service.service, value: service.value, description: service.description || '' });
+    setIsModalOpen(true);
+  };
+
+  if (loading) return <div className="animate-pulse h-20 bg-gray-100 rounded-xl"></div>;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <h3 className="font-bold text-sm uppercase tracking-wider text-inactive">Serviços e Preços</h3>
+        {isOwner && (
+          <button 
+            onClick={() => { setEditingService(null); setFormData({ service: '', value: '', description: '' }); setIsModalOpen(true); }}
+            className="text-primary hover:bg-primary/5 p-1 rounded-full transition-colors"
+          >
+            <Plus className="w-5 h-5" />
+          </button>
+        )}
+      </div>
+
+      <div className="space-y-3">
+        {services.length === 0 ? (
+          <p className="text-text-sub text-sm italic">Nenhum serviço listado.</p>
+        ) : (
+          services.map((s) => (
+            <div key={s.id} className="flex justify-between items-start p-3 rounded-xl border border-black/5 bg-white/50 group">
+              <div className="space-y-1">
+                <div className="font-bold text-text-main">{s.service}</div>
+                {s.description && <div className="text-xs text-text-sub">{s.description}</div>}
+              </div>
+              <div className="flex items-center space-x-3">
+                <div className="font-bold text-primary">{s.value}</div>
+                {isOwner && (
+                  <div className="flex space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button onClick={() => openEdit(s)} className="p-1 text-inactive hover:text-primary"><Edit2 className="w-4 h-4" /></button>
+                    <button onClick={() => handleDelete(s.id)} className="p-1 text-inactive hover:text-alert"><Trash2 className="w-4 h-4" /></button>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      <AnimatePresence>
+        {isModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="card p-6 w-full max-w-md space-y-4"
+            >
+              <div className="flex justify-between items-center">
+                <h3 className="text-xl font-bold">{editingService ? 'Editar Serviço' : 'Adicionar Serviço'}</h3>
+                <button onClick={() => setIsModalOpen(false)}><X className="w-6 h-6" /></button>
+              </div>
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="space-y-1">
+                  <label className="text-xs font-bold uppercase text-inactive">Nome do Serviço</label>
+                  <input 
+                    required
+                    type="text" 
+                    className="w-full px-4 py-2 rounded-lg border border-black/5 outline-none focus:ring-2 focus:ring-primary/20"
+                    value={formData.service}
+                    onChange={e => setFormData({...formData, service: e.target.value})}
+                    placeholder="Ex: 1 Hora de Encontro"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-bold uppercase text-inactive">Valor</label>
+                  <input 
+                    required
+                    type="text" 
+                    className="w-full px-4 py-2 rounded-lg border border-black/5 outline-none focus:ring-2 focus:ring-primary/20"
+                    value={formData.value}
+                    onChange={e => setFormData({...formData, value: e.target.value})}
+                    placeholder="Ex: 50.000 Kz"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-bold uppercase text-inactive">Descrição (Opcional)</label>
+                  <textarea 
+                    className="w-full px-4 py-2 rounded-lg border border-black/5 outline-none focus:ring-2 focus:ring-primary/20 h-24 resize-none"
+                    value={formData.description}
+                    onChange={e => setFormData({...formData, description: e.target.value})}
+                    placeholder="Detalhes sobre o serviço..."
+                  />
+                </div>
+                <button type="submit" className="w-full btn-primary py-3">
+                  {editingService ? 'Salvar Alterações' : 'Adicionar'}
+                </button>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
+
 const EscortProfilePage = ({ user }: { user: User | null }) => {
   const { id } = useParams();
   const [escort, setEscort] = useState<EscortProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [editFormData, setEditFormData] = useState({
+    artisticName: '',
+    age: 18,
+    city: 'Luanda',
+    bio: '',
+    height: 0,
+    weight: 0,
+    bodyType: 'atlético' as BodyType,
+    mainPhotoUrl: '',
+    instagram: '',
+    facebook: ''
+  });
+
+  const fetchProfile = async () => {
+    if (!id) return;
+    const { data, error } = await supabase
+      .from('escort_profiles')
+      .select('*')
+      .eq('id', id)
+      .single();
+    
+    if (error) {
+      handleSupabaseError(error, OperationType.GET, 'escort_profiles');
+    } else if (data) {
+      const mappedData: EscortProfile = {
+        id: data.id,
+        userId: data.user_id,
+        artisticName: data.artistic_name,
+        age: data.age,
+        city: data.city,
+        verified: data.verified,
+        rating: data.rating,
+        views: data.views,
+        mainPhotoUrl: data.main_photo_url,
+        bodyType: data.body_type,
+        bio: data.bio,
+        height: data.height,
+        weight: data.weight,
+        socialLinks: data.social_links || {}
+      };
+      setEscort(mappedData);
+      setEditFormData({
+        artisticName: mappedData.artisticName,
+        age: mappedData.age,
+        city: mappedData.city,
+        bio: mappedData.bio || '',
+        height: mappedData.height || 0,
+        weight: mappedData.weight || 0,
+        bodyType: mappedData.bodyType || 'atlético',
+        mainPhotoUrl: mappedData.mainPhotoUrl || '',
+        instagram: mappedData.socialLinks?.instagram || '',
+        facebook: mappedData.socialLinks?.facebook || ''
+      });
+    }
+    setLoading(false);
+  };
 
   useEffect(() => {
-    if (!id) return;
-    const unsubscribe = onSnapshot(doc(db, 'escort_profiles', id), (snapshot) => {
-      if (snapshot.exists()) {
-        setEscort({ id: snapshot.id, ...snapshot.data() } as EscortProfile);
-      }
-      setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, `escort_profiles/${id}`);
-    });
-    return () => unsubscribe();
+    fetchProfile();
+    
+    const channel = supabase
+      .channel(`profile_${id}`)
+      .on('postgres_changes', { 
+        event: 'UPDATE', 
+        schema: 'public', 
+        table: 'escort_profiles',
+        filter: `id=eq.${id}`
+      }, () => {
+        fetchProfile();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [id]);
+
+  const handleUpdateProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!escort) return;
+    try {
+      const { error } = await supabase
+        .from('escort_profiles')
+        .update({
+          artistic_name: editFormData.artisticName,
+          age: editFormData.age,
+          city: editFormData.city,
+          bio: editFormData.bio,
+          height: editFormData.height,
+          weight: editFormData.weight,
+          body_type: editFormData.bodyType,
+          main_photo_url: editFormData.mainPhotoUrl,
+          social_links: {
+            instagram: editFormData.instagram,
+            facebook: editFormData.facebook
+          }
+        })
+        .eq('id', escort.id);
+      
+      if (error) throw error;
+      setIsEditModalOpen(false);
+    } catch (error) {
+      handleSupabaseError(error, OperationType.UPDATE, 'escort_profiles');
+    }
+  };
+
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !escort) return;
+
+    setUploadingPhoto(true);
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${escort.id}-${Math.random()}.${fileExt}`;
+      const filePath = `profiles/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('photos')
+        .upload(filePath, file);
+
+      if (uploadError) throw uploadError;
+
+      const { data: { publicUrl } } = supabase.storage
+        .from('photos')
+        .getPublicUrl(filePath);
+
+      setEditFormData(prev => ({ ...prev, mainPhotoUrl: publicUrl }));
+      
+      // Also update immediately if in modal
+      if (!isEditModalOpen) {
+         await supabase
+          .from('escort_profiles')
+          .update({ main_photo_url: publicUrl })
+          .eq('id', escort.id);
+      }
+    } catch (error) {
+      handleSupabaseError(error, OperationType.UPLOAD, 'storage/photos');
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
 
   if (loading) return <div className="flex justify-center py-20"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div></div>;
   if (!escort) return <div className="text-center py-20 text-text-sub">Perfil não encontrado.</div>;
@@ -360,13 +718,29 @@ const EscortProfilePage = ({ user }: { user: User | null }) => {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Left: Photos */}
         <div className="lg:col-span-2 space-y-4">
-          <div className="card aspect-[3/4] relative">
+          <div className="card aspect-[3/4] relative group overflow-hidden">
             <img
-              src={`https://picsum.photos/seed/${escort.id}/1200/1600`}
+              src={escort.mainPhotoUrl || `https://picsum.photos/seed/${escort.id}/1200/1600`}
               alt={escort.artisticName}
               className="w-full h-full object-cover"
               referrerPolicy="no-referrer"
             />
+            {user?.id === escort.userId && (
+              <label className="absolute bottom-4 right-4 p-3 bg-white/90 backdrop-blur-sm rounded-full shadow-lg cursor-pointer hover:bg-white transition-all transform translate-y-2 opacity-0 group-hover:translate-y-0 group-hover:opacity-100">
+                <input 
+                  type="file" 
+                  className="hidden" 
+                  accept="image/*"
+                  onChange={handlePhotoUpload}
+                  disabled={uploadingPhoto}
+                />
+                {uploadingPhoto ? (
+                  <div className="animate-spin rounded-full h-5 w-5 border-2 border-primary border-t-transparent" />
+                ) : (
+                  <Camera className="w-5 h-5 text-primary" />
+                )}
+              </label>
+            )}
             {escort.verified === 'verified' && (
               <div className="absolute top-4 right-4 bg-verified text-white px-3 py-1.5 rounded-full flex items-center space-x-2 shadow-lg font-bold text-sm">
                 <CheckCircle className="w-4 h-4" />
@@ -399,9 +773,20 @@ const EscortProfilePage = ({ user }: { user: User | null }) => {
                   <span>{escort.city}</span>
                 </p>
               </div>
-              <div className="flex items-center space-x-1 text-primary bg-primary/10 px-3 py-1 rounded-full">
-                <Star className="w-4 h-4 fill-current" />
-                <span className="font-bold text-lg">{escort.rating.toFixed(1)}</span>
+              <div className="flex flex-col items-end space-y-2">
+                <div className="flex items-center space-x-1 text-primary bg-primary/10 px-3 py-1 rounded-full">
+                  <Star className="w-4 h-4 fill-current" />
+                  <span className="font-bold text-lg">{escort.rating.toFixed(1)}</span>
+                </div>
+                {user?.id === escort.id && (
+                  <button 
+                    onClick={() => setIsEditModalOpen(true)}
+                    className="text-xs font-bold text-primary hover:underline flex items-center space-x-1"
+                  >
+                    <Edit2 className="w-3 h-3" />
+                    <span>Editar Perfil</span>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -433,6 +818,8 @@ const EscortProfilePage = ({ user }: { user: User | null }) => {
               <p className="text-text-main leading-relaxed">{escort.bio || 'Sem biografia disponível.'}</p>
             </div>
 
+            <ServicesSection escortId={escort.id} isOwner={user?.id === escort.id} />
+
             <div className="space-y-3 pt-4">
               <Link to={`/chat/${escort.id}`} className="w-full btn-primary py-4 flex items-center justify-center space-x-2 text-lg">
                 <MessageSquare className="w-5 h-5" />
@@ -453,22 +840,179 @@ const EscortProfilePage = ({ user }: { user: User | null }) => {
           <div className="card p-6 space-y-4">
             <h3 className="font-bold text-sm uppercase tracking-wider text-inactive">Redes Sociais</h3>
             <div className="flex space-x-4">
-              {escort.socialLinks?.instagram && (
-                <a href={`https://instagram.com/${escort.socialLinks.instagram}`} target="_blank" rel="noreferrer" className="flex items-center space-x-2 text-text-main hover:text-primary transition-colors">
-                  <Instagram className="w-5 h-5" />
-                  <span>Instagram</span>
-                </a>
-              )}
-              {escort.socialLinks?.facebook && (
-                <a href={`https://facebook.com/${escort.socialLinks.facebook}`} target="_blank" rel="noreferrer" className="flex items-center space-x-2 text-text-main hover:text-primary transition-colors">
-                  <Facebook className="w-5 h-5" />
-                  <span>Facebook</span>
-                </a>
+              {escort.socialLinks?.instagram || escort.socialLinks?.facebook ? (
+                <>
+                  {escort.socialLinks?.instagram && (
+                    <a href={`https://instagram.com/${escort.socialLinks.instagram}`} target="_blank" rel="noreferrer" className="flex items-center space-x-2 text-text-main hover:text-primary transition-colors">
+                      <Instagram className="w-5 h-5" />
+                      <span>Instagram</span>
+                    </a>
+                  )}
+                  {escort.socialLinks?.facebook && (
+                    <a href={`https://facebook.com/${escort.socialLinks.facebook}`} target="_blank" rel="noreferrer" className="flex items-center space-x-2 text-text-main hover:text-primary transition-colors">
+                      <Facebook className="w-5 h-5" />
+                      <span>Facebook</span>
+                    </a>
+                  )}
+                </>
+              ) : (
+                <p className="text-text-sub text-sm italic">Nenhuma rede social adicionada.</p>
               )}
             </div>
           </div>
         </div>
       </div>
+
+      <AnimatePresence>
+        {isEditModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="card p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto space-y-4"
+            >
+              <div className="flex justify-between items-center">
+                <h3 className="text-xl font-bold">Editar Perfil</h3>
+                <button onClick={() => setIsEditModalOpen(false)}><X className="w-6 h-6" /></button>
+              </div>
+              <form onSubmit={handleUpdateProfile} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-xs font-bold uppercase text-inactive">Nome Artístico</label>
+                  <input 
+                    required
+                    type="text" 
+                    className="w-full px-4 py-2 rounded-lg border border-black/5 outline-none focus:ring-2 focus:ring-primary/20"
+                    value={editFormData.artisticName}
+                    onChange={e => setEditFormData({...editFormData, artisticName: e.target.value})}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-bold uppercase text-inactive">Foto Principal</label>
+                  <div className="flex items-center space-x-4">
+                    <div className="w-16 h-16 rounded-lg overflow-hidden border border-black/5">
+                      <img 
+                        src={editFormData.mainPhotoUrl || 'https://picsum.photos/seed/placeholder/100/100'} 
+                        alt="Preview" 
+                        className="w-full h-full object-cover"
+                        referrerPolicy="no-referrer"
+                      />
+                    </div>
+                    <label className="flex-1 flex items-center justify-center px-4 py-2 border border-dashed border-primary/40 rounded-lg cursor-pointer hover:bg-primary/5 transition-colors">
+                      <input 
+                        type="file" 
+                        className="hidden" 
+                        accept="image/*"
+                        onChange={handlePhotoUpload}
+                        disabled={uploadingPhoto}
+                      />
+                      <div className="flex items-center space-x-2 text-primary font-bold">
+                        {uploadingPhoto ? (
+                          <div className="animate-spin rounded-full h-4 w-4 border-2 border-primary border-t-transparent" />
+                        ) : (
+                          <Upload className="w-4 h-4" />
+                        )}
+                        <span>{uploadingPhoto ? 'Enviando...' : 'Alterar Foto'}</span>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-bold uppercase text-inactive">Idade</label>
+                  <input 
+                    required
+                    type="number" 
+                    className="w-full px-4 py-2 rounded-lg border border-black/5 outline-none focus:ring-2 focus:ring-primary/20"
+                    value={editFormData.age}
+                    onChange={e => setEditFormData({...editFormData, age: parseInt(e.target.value)})}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-bold uppercase text-inactive">Cidade</label>
+                  <input 
+                    required
+                    type="text" 
+                    className="w-full px-4 py-2 rounded-lg border border-black/5 outline-none focus:ring-2 focus:ring-primary/20"
+                    value={editFormData.city}
+                    onChange={e => setEditFormData({...editFormData, city: e.target.value})}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-bold uppercase text-inactive">Altura (m)</label>
+                  <input 
+                    type="number" 
+                    step="0.01"
+                    className="w-full px-4 py-2 rounded-lg border border-black/5 outline-none focus:ring-2 focus:ring-primary/20"
+                    value={editFormData.height}
+                    onChange={e => setEditFormData({...editFormData, height: parseFloat(e.target.value)})}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-bold uppercase text-inactive">Peso (kg)</label>
+                  <input 
+                    type="number" 
+                    className="w-full px-4 py-2 rounded-lg border border-black/5 outline-none focus:ring-2 focus:ring-primary/20"
+                    value={editFormData.weight}
+                    onChange={e => setEditFormData({...editFormData, weight: parseInt(e.target.value)})}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-bold uppercase text-inactive">Tipo Físico</label>
+                  <select 
+                    className="w-full px-4 py-2 rounded-lg border border-black/5 outline-none focus:ring-2 focus:ring-primary/20"
+                    value={editFormData.bodyType}
+                    onChange={e => setEditFormData({...editFormData, bodyType: e.target.value as BodyType})}
+                  >
+                    <option value="magro">Magro</option>
+                    <option value="atlético">Atlético</option>
+                    <option value="forte">Forte</option>
+                    <option value="musculoso">Musculoso</option>
+                  </select>
+                </div>
+                <div className="md:col-span-2 space-y-1">
+                  <label className="text-xs font-bold uppercase text-inactive">Biografia</label>
+                  <textarea 
+                    className="w-full px-4 py-2 rounded-lg border border-black/5 outline-none focus:ring-2 focus:ring-primary/20 h-24 resize-none"
+                    value={editFormData.bio}
+                    onChange={e => setEditFormData({...editFormData, bio: e.target.value})}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-bold uppercase text-inactive">Instagram (usuário)</label>
+                  <div className="relative">
+                    <Instagram className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-inactive" />
+                    <input 
+                      type="text" 
+                      placeholder="seu.perfil"
+                      className="w-full pl-10 pr-4 py-2 rounded-lg border border-black/5 outline-none focus:ring-2 focus:ring-primary/20"
+                      value={editFormData.instagram}
+                      onChange={e => setEditFormData({...editFormData, instagram: e.target.value})}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-bold uppercase text-inactive">Facebook (usuário/slug)</label>
+                  <div className="relative">
+                    <Facebook className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-inactive" />
+                    <input 
+                      type="text" 
+                      placeholder="seu.perfil"
+                      className="w-full pl-10 pr-4 py-2 rounded-lg border border-black/5 outline-none focus:ring-2 focus:ring-primary/20"
+                      value={editFormData.facebook}
+                      onChange={e => setEditFormData({...editFormData, facebook: e.target.value})}
+                    />
+                  </div>
+                </div>
+                <div className="md:col-span-2 pt-4">
+                  <button type="submit" className="w-full btn-primary py-3">
+                    Salvar Alterações
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };
@@ -505,49 +1049,90 @@ const ChatPage = ({ user }: { user: User | null }) => {
   const [otherUser, setOtherUser] = useState<User | null>(null);
   const scrollRef = React.useRef<HTMLDivElement>(null);
 
+  const fetchOtherUser = async () => {
+    if (!otherUserId) return;
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', otherUserId)
+      .single();
+    
+    if (!error && data) {
+      setOtherUser({
+        id: data.id,
+        name: data.name,
+        email: data.email,
+        type: data.type,
+        status: data.status,
+        createdAt: data.created_at,
+        lastAccess: data.last_access
+      } as User);
+    }
+  };
+
+  const fetchMessages = async () => {
+    if (!user || !otherUserId) return;
+    
+    const { data, error } = await supabase
+      .from('messages')
+      .select('*')
+      .or(`and(sender_id.eq.${user.id},receiver_id.eq.${otherUserId}),and(sender_id.eq.${otherUserId},receiver_id.eq.${user.id})`)
+      .order('created_at', { ascending: true });
+    
+    if (error) {
+      handleSupabaseError(error, OperationType.GET, 'messages');
+    } else {
+      setMessages(data.map(m => ({
+        id: m.id,
+        senderId: m.sender_id,
+        receiverId: m.receiver_id,
+        content: m.content,
+        createdAt: m.created_at,
+        isRead: m.is_read
+      } as Message)));
+      setTimeout(() => scrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+    }
+  };
+
   useEffect(() => {
     if (!user || !otherUserId) return;
-    const chatId = [user.id, otherUserId].sort().join('_');
-    
-    getDoc(doc(db, 'users', otherUserId)).then(snap => {
-      if (snap.exists()) setOtherUser(snap.data() as User);
-    }).catch(error => {
-      handleFirestoreError(error, OperationType.GET, `users/${otherUserId}`);
-    });
+    fetchOtherUser();
+    fetchMessages();
 
-    const q = query(
-      collection(db, `chats/${chatId}/messages`),
-      orderBy('createdAt', 'asc'),
-      limit(50)
-    );
+    const channel = supabase
+      .channel(`chat_${user.id}_${otherUserId}`)
+      .on('postgres_changes', { 
+        event: 'INSERT', 
+        schema: 'public', 
+        table: 'messages'
+      }, () => {
+        fetchMessages();
+      })
+      .subscribe();
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setMessages(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Message)));
-      setTimeout(() => scrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, `chats/${chatId}/messages`);
-    });
-
-    return () => unsubscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [user, otherUserId]);
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user || !otherUserId || !newMessage.trim()) return;
-    const chatId = [user.id, otherUserId].sort().join('_');
 
     try {
-      await addDoc(collection(db, `chats/${chatId}/messages`), {
-        senderId: user.id,
-        receiverId: otherUserId,
-        content: newMessage,
-        isRead: false,
-        isReported: false,
-        createdAt: new Date().toISOString()
-      });
+      const { error } = await supabase
+        .from('messages')
+        .insert({
+          sender_id: user.id,
+          receiver_id: otherUserId,
+          content: newMessage.trim(),
+          is_read: false
+        });
+      
+      if (error) throw error;
       setNewMessage('');
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, `chats/${chatId}/messages`);
+      handleSupabaseError(error, OperationType.CREATE, 'messages');
     }
   };
 
@@ -618,18 +1203,33 @@ const VerificationUpload = ({ user }: { user: User | null }) => {
   const handleUpload = async () => {
     if (!user || !file) return;
     setUploading(true);
-    setTimeout(async () => {
-      try {
-        await updateDoc(doc(db, 'escort_profiles', user.id), {
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${user.id}-verification-${Date.now()}.${fileExt}`;
+      const filePath = `verifications/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('verifications')
+        .upload(filePath, file);
+
+      if (uploadError) throw uploadError;
+
+      const { error: updateError } = await supabase
+        .from('escort_profiles')
+        .update({
           verified: 'pending',
-          verificationDate: new Date().toISOString()
-        });
-        setUploading(false);
-        alert('Documento enviado para análise!');
-      } catch (error) {
-        handleFirestoreError(error, OperationType.UPDATE, `escort_profiles/${user.id}`);
-      }
-    }, 1500);
+          verification_date: new Date().toISOString()
+        })
+        .eq('user_id', user.id);
+
+      if (updateError) throw updateError;
+      
+      setUploading(false);
+      alert('Documento enviado para análise!');
+    } catch (error) {
+      handleSupabaseError(error, OperationType.UPLOAD, 'storage/verifications');
+      setUploading(false);
+    }
   };
 
   return (
@@ -669,30 +1269,67 @@ const AdminPanel = () => {
   const [reports, setReports] = useState<Report[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const fetchData = async () => {
+    const { data: escorts, error: escortsError } = await supabase
+      .from('escort_profiles')
+      .select('*')
+      .eq('verified', 'pending');
+    
+    if (escortsError) {
+      handleSupabaseError(escortsError, OperationType.GET, 'escort_profiles');
+    } else {
+      setPendingEscorts(escorts.map(e => ({
+        id: e.id,
+        userId: e.user_id,
+        artisticName: e.artistic_name,
+        city: e.city,
+        verified: e.verified,
+        age: e.age,
+        mainPhotoUrl: e.main_photo_url
+      } as EscortProfile)));
+    }
+    setLoading(false);
+  };
+
   useEffect(() => {
-    const q = query(collection(db, 'escort_profiles'), where('verified', '==', 'pending'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setPendingEscorts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as EscortProfile)));
-      setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'escort_profiles');
-    });
-    return () => unsubscribe();
+    fetchData();
+    
+    const channel = supabase
+      .channel('admin_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'escort_profiles' }, () => {
+        fetchData();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   const handleApprove = async (id: string) => {
     try {
-      await updateDoc(doc(db, 'escort_profiles', id), { verified: 'verified', verificationDate: new Date().toISOString() });
+      const { error } = await supabase
+        .from('escort_profiles')
+        .update({ 
+          verified: 'verified', 
+          verification_date: new Date().toISOString() 
+        })
+        .eq('id', id);
+      if (error) throw error;
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `escort_profiles/${id}`);
+      handleSupabaseError(error, OperationType.UPDATE, 'escort_profiles');
     }
   };
 
   const handleReject = async (id: string) => {
     try {
-      await updateDoc(doc(db, 'escort_profiles', id), { verified: 'unverified' });
+      const { error } = await supabase
+        .from('escort_profiles')
+        .update({ verified: 'unverified' })
+        .eq('id', id);
+      if (error) throw error;
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `escort_profiles/${id}`);
+      handleSupabaseError(error, OperationType.UPDATE, 'escort_profiles');
     }
   };
 
@@ -714,7 +1351,7 @@ const AdminPanel = () => {
                 <h3 className="font-bold">{escort.artisticName}</h3>
                 <p className="text-sm text-text-sub">{escort.city} • {escort.age} anos</p>
                 <div className="mt-2 aspect-video bg-gray-100 rounded-lg overflow-hidden">
-                   <img src={`https://picsum.photos/seed/${escort.id}/400/225`} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                   <img src={escort.mainPhotoUrl || `https://picsum.photos/seed/${escort.id}/400/225`} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                 </div>
               </div>
               <div className="flex gap-2 mt-4">
@@ -737,110 +1374,134 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [showRoleSelection, setShowRoleSelection] = useState(false);
 
+  const fetchUserData = async (userId: string) => {
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', userId)
+      .single();
+    
+    if (!error && data) {
+      setUser({
+        id: data.id,
+        name: data.name,
+        email: data.email,
+        type: data.type,
+        status: data.status,
+        createdAt: data.created_at,
+        lastAccess: data.last_access
+      } as User);
+      setShowRoleSelection(false);
+    } else {
+      setShowRoleSelection(true);
+    }
+    setLoading(false);
+  };
+
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser) {
-        const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
-        if (userDoc.exists()) {
-          setUser({ id: userDoc.id, ...userDoc.data() } as User);
-          setShowRoleSelection(false);
-        } else {
-          const isAdminEmail = firebaseUser.email === "adilsonnguali@gmail.com";
-          if (isAdminEmail) {
-            const adminUser: User = {
-              id: firebaseUser.uid,
-              name: firebaseUser.displayName || 'Admin',
-              email: firebaseUser.email || '',
-              type: 'admin',
-              status: 'active',
-              createdAt: new Date().toISOString(),
-              lastAccess: new Date().toISOString()
-            };
-            await setDoc(doc(db, 'users', firebaseUser.uid), adminUser);
-            setUser(adminUser);
-            setShowRoleSelection(false);
-          } else {
-            setShowRoleSelection(true);
-          }
-        }
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) {
+        fetchUserData(session.user.id);
+      } else {
+        setLoading(false);
+      }
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session) {
+        fetchUserData(session.user.id);
       } else {
         setUser(null);
         setShowRoleSelection(false);
+        setLoading(false);
       }
-      setLoading(false);
     });
-    return () => unsubscribe();
+
+    return () => subscription.unsubscribe();
   }, []);
 
-  useEffect(() => {
-    const seedData = async () => {
-      if (user?.type !== 'admin') return;
-      try {
-        const snapshot = await getDoc(doc(db, 'escort_profiles', 'seed_check'));
-        if (!snapshot.exists()) {
-          // Only seed if we are authenticated as admin or it's the first run
-          const mockEscorts = [
-            { id: 'escort_1', artisticName: 'João M.', age: 28, city: 'Luanda', bodyType: 'atlético', verified: 'verified', rating: 4.8, views: 120, bio: 'Acompanhante discreto e educado para jantares e eventos.' },
-            { id: 'escort_2', artisticName: 'Carlos P.', age: 32, city: 'Benguela', bodyType: 'forte', verified: 'verified', rating: 4.5, views: 85, bio: 'Disponível para festas e viagens. Experiência em eventos corporativos.' },
-            { id: 'escort_3', artisticName: 'Miguel S.', age: 25, city: 'Lubango', bodyType: 'magro', verified: 'verified', rating: 4.9, views: 210, bio: 'Companhia agradável para passeios e conversas interessantes.' },
-            { id: 'escort_4', artisticName: 'Ricardo F.', age: 30, city: 'Huambo', bodyType: 'musculoso', verified: 'pending', rating: 4.7, views: 45, bio: 'Focado em bem-estar e companhia de elite.' }
-          ];
-
-          for (const e of mockEscorts) {
-            try {
-              await setDoc(doc(db, 'escort_profiles', e.id), { ...e, userId: e.id, verificationDate: new Date().toISOString() });
-            } catch (err) {
-              console.warn(`Failed to seed escort ${e.id}:`, err);
-            }
-          }
-          await setDoc(doc(db, 'escort_profiles', 'seed_check'), { seeded: true });
-        }
-      } catch (err) {
-        console.warn('Seed check failed (likely permissions):', err);
-      }
-    };
-    seedData();
-  }, [user]);
-
   const handleRoleSelect = async (type: UserType) => {
-    if (!auth.currentUser) return;
-    const newUser: User = {
-      id: auth.currentUser.uid,
-      name: auth.currentUser.displayName || 'Utilizador',
-      email: auth.currentUser.email || '',
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
+
+    const newUser = {
+      id: session.user.id,
+      name: session.user.user_metadata.full_name || 'Utilizador',
+      email: session.user.email || '',
       type,
       status: 'active',
-      createdAt: new Date().toISOString(),
-      lastAccess: new Date().toISOString()
+      created_at: new Date().toISOString(),
+      last_access: new Date().toISOString()
     };
-    await setDoc(doc(db, 'users', auth.currentUser.uid), newUser);
-    setUser(newUser);
-    setShowRoleSelection(false);
 
-    if (type === 'escort') {
-      // Create initial empty profile
-      await setDoc(doc(db, 'escort_profiles', auth.currentUser.uid), {
-        userId: auth.currentUser.uid,
-        artisticName: auth.currentUser.displayName || 'Novo Acompanhante',
-        age: 18,
-        city: 'Luanda',
-        verified: 'pending',
-        views: 0,
-        rating: 5.0
-      });
+    try {
+      const { error: userError } = await supabase
+        .from('users')
+        .insert(newUser);
+      
+      if (userError) throw userError;
+
+      if (type === 'escort') {
+        const { error: profileError } = await supabase
+          .from('escort_profiles')
+          .insert({
+            user_id: session.user.id,
+            artistic_name: session.user.user_metadata.full_name || 'Novo Acompanhante',
+            age: 18,
+            city: 'Luanda',
+            verified: 'pending',
+            views: 0,
+            rating: 5.0,
+            main_photo_url: `https://picsum.photos/seed/${session.user.id}/600/800`
+          });
+        if (profileError) throw profileError;
+      }
+
+      fetchUserData(session.user.id);
+    } catch (error) {
+      handleSupabaseError(error, OperationType.CREATE, 'users/escort_profiles');
     }
   };
 
   const handleLogin = async () => {
-    try {
-      const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
-    } catch (error) {
-      console.error('Login error:', error);
-    }
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: window.location.origin
+      }
+    });
+    if (error) handleSupabaseError(error, OperationType.GET, 'auth');
   };
 
-  const handleLogout = () => signOut(auth);
+  const handleLogout = async () => {
+    const { error } = await supabase.auth.signOut();
+    if (error) handleSupabaseError(error, OperationType.GET, 'auth');
+  };
+
+  if (!isSupabaseConfigured) {
+    return (
+      <div className="min-h-screen bg-bg-main flex items-center justify-center p-4">
+        <div className="card p-8 max-w-md w-full text-center space-y-6">
+          <ShieldAlert className="w-16 h-16 text-alert mx-auto" />
+          <div className="space-y-2">
+            <h2 className="text-2xl font-bold">Configuração Necessária</h2>
+            <p className="text-text-sub">
+              As variáveis de ambiente da Supabase não foram encontradas.
+            </p>
+          </div>
+          <div className="bg-black/5 p-4 rounded-lg text-left text-xs font-mono space-y-2">
+            <p>1. Vá ao menu <strong>Settings</strong></p>
+            <p>2. Adicione as seguintes variáveis:</p>
+            <p className="text-primary">VITE_SUPABASE_URL</p>
+            <p className="text-primary">VITE_SUPABASE_ANON_KEY</p>
+          </div>
+          <p className="text-xs text-inactive">
+            Após configurar, a aplicação será reiniciada automaticamente.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
@@ -852,10 +1513,12 @@ export default function App() {
 
   if (showRoleSelection) {
     return (
-      <div className="min-h-screen bg-bg-main">
-        <Navbar user={null} onLogin={handleLogin} onLogout={handleLogout} />
-        <RoleSelection onSelect={handleRoleSelect} />
-      </div>
+      <Router>
+        <div className="min-h-screen bg-bg-main">
+          <Navbar user={null} onLogin={handleLogin} onLogout={handleLogout} />
+          <RoleSelection onSelect={handleRoleSelect} />
+        </div>
+      </Router>
     );
   }
 
