@@ -43,6 +43,12 @@ function handleSupabaseError(error: any, operationType: OperationType, table: st
     message = 'A Anon Key da Supabase é inválida. Verifique-a no menu Settings.';
   } else if (message.includes('auth/unauthorized-domain')) {
     message = 'Este domínio não está autorizado no seu projeto Supabase. Adicione o URL da aplicação às "Redirect URLs" no Supabase Auth.';
+  } else if (message.includes('Invalid login credentials')) {
+    message = 'E-mail ou palavra-passe incorretos. Verifique os seus dados ou registe-se se ainda não tem conta.';
+  } else if (message.includes('User already registered')) {
+    message = 'Este e-mail já está registado. Por favor, utilize a opção "Entrar" em vez de criar uma nova conta.';
+  } else if (message.includes('Signup is disabled')) {
+    message = 'O registo de novos utilizadores está temporariamente desativado nas definições do Supabase.';
   }
 
   const errInfo: SupabaseErrorInfo = {
@@ -121,25 +127,80 @@ class ErrorBoundary extends Component<any, any> {
 
 // --- Components ---
 
-const LoginModal = ({ isOpen, onClose, onLogin }: { isOpen: boolean, onClose: () => void, onLogin: (email: string) => Promise<void> }) => {
+const LoginModal = ({ 
+  isOpen, 
+  onClose, 
+  onLogin, 
+  onSignUp,
+  onMagicLink 
+}: { 
+  isOpen: boolean, 
+  onClose: () => void, 
+  onLogin: (email: string, pass: string) => Promise<void>, 
+  onSignUp: (email: string, pass: string) => Promise<void>,
+  onMagicLink: (email: string) => Promise<void>
+}) => {
+  const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const isAdminEmail = email.toLowerCase() === 'adilsonnguali@gmail.com';
+
+  const handleMagicLink = async () => {
+    if (!email) {
+      setError('Por favor, insira o seu e-mail.');
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
-      await onLogin(email);
-      setSent(true);
+      await onMagicLink(email);
+      setError('Link de acesso enviado! Verifique o seu e-mail.');
     } catch (err: any) {
-      setError(err.message || 'Erro ao enviar link de acesso.');
+      setError(err.message || 'Erro ao enviar link.');
     } finally {
       setLoading(false);
     }
   };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (password.length < 6) {
+      setError('A senha deve ter pelo menos 6 caracteres.');
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      if (isSignUp) {
+        await onSignUp(email, password);
+      } else {
+        await onLogin(email, password);
+      }
+      onClose();
+    } catch (err: any) {
+      let msg = err.message || 'Erro na autenticação.';
+      
+      try {
+        const parsed = JSON.parse(msg);
+        if (parsed.error) msg = parsed.error;
+      } catch (e) {}
+
+      setError(msg);
+      
+      // Auto-suggest switching modes based on error
+      if (msg.includes('já está registado')) {
+        setError(msg + ' Deseja mudar para o modo de entrada?');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const isUserAlreadyRegistered = error?.includes('já está registado');
+  const isInvalidCredentials = error?.includes('incorretos');
 
   return (
     <AnimatePresence>
@@ -157,60 +218,101 @@ const LoginModal = ({ isOpen, onClose, onLogin }: { isOpen: boolean, onClose: ()
 
             <div className="text-center space-y-2">
               <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mx-auto mb-4">
-                <Send className="w-8 h-8 text-primary" />
+                <UserIcon className="w-8 h-8 text-primary" />
               </div>
-              <h2 className="text-2xl font-bold">Entrar no MeuHomem</h2>
+              <h2 className="text-2xl font-bold">{isSignUp ? 'Criar Conta' : 'Entrar no MeuHomem'}</h2>
               <p className="text-text-sub text-sm">
-                Enviaremos um link de acesso mágico para o seu e-mail.
+                {isSignUp ? 'Junte-se à maior comunidade de Angola.' : 'Bem-vindo de volta!'}
               </p>
             </div>
 
-            {sent ? (
-              <div className="bg-primary/10 p-6 rounded-xl text-center space-y-4">
-                <CheckCircle className="w-12 h-12 text-primary mx-auto" />
-                <div className="space-y-1">
-                  <p className="font-bold text-primary">E-mail Enviado!</p>
-                  <p className="text-sm text-text-sub">Verifique a sua caixa de entrada (e a pasta de spam) para o link de login.</p>
-                </div>
-                <button onClick={onClose} className="btn-primary w-full py-2">Fechar</button>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="space-y-1">
+                <label className="text-xs font-bold uppercase text-inactive">E-mail</label>
+                <input
+                  required
+                  type="email"
+                  placeholder="seu@email.com"
+                  className="w-full px-4 py-3 rounded-xl border border-black/5 outline-none focus:ring-2 focus:ring-primary/20 bg-bg-main"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                />
               </div>
-            ) : (
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <div className="space-y-1">
-                  <label className="text-xs font-bold uppercase text-inactive">E-mail</label>
-                  <input
-                    required
-                    type="email"
-                    placeholder="seu@email.com"
-                    className="w-full px-4 py-3 rounded-xl border border-black/5 outline-none focus:ring-2 focus:ring-primary/20 bg-bg-main"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                  />
+
+              <div className="space-y-1">
+                <label className="text-xs font-bold uppercase text-inactive">Palavra-passe</label>
+                <input
+                  required
+                  type="password"
+                  placeholder="••••••••"
+                  className="w-full px-4 py-3 rounded-xl border border-black/5 outline-none focus:ring-2 focus:ring-primary/20 bg-bg-main"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+              </div>
+
+              {error && (
+                <div className="p-3 bg-alert/10 border border-alert text-alert rounded-lg text-xs flex items-center space-x-2">
+                  <ShieldAlert className="w-4 h-4" />
+                  <span>{error}</span>
                 </div>
+              )}
 
-                {error && (
-                  <div className="p-3 bg-alert/10 border border-alert text-alert rounded-lg text-xs flex items-center space-x-2">
-                    <ShieldAlert className="w-4 h-4" />
-                    <span>{error}</span>
-                  </div>
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full btn-primary py-4 flex items-center justify-center space-x-2 font-bold"
+              >
+                {loading ? (
+                  <div className="animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent" />
+                ) : (
+                  <span>{isSignUp ? 'Registar Agora' : 'Entrar'}</span>
                 )}
+              </button>
 
+              {isAdminEmail && !isSignUp && (
                 <button
-                  type="submit"
+                  type="button"
+                  onClick={handleMagicLink}
                   disabled={loading}
-                  className="w-full btn-primary py-4 flex items-center justify-center space-x-2 font-bold"
+                  className="w-full bg-zinc-900 text-white py-4 rounded-xl flex items-center justify-center space-x-2 font-bold border border-white/10 hover:bg-black transition-colors"
                 >
-                  {loading ? (
-                    <div className="animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent" />
-                  ) : (
-                    <>
-                      <span>Enviar Link de Acesso</span>
-                      <Send className="w-4 h-4" />
-                    </>
-                  )}
+                  <Shield className="w-5 h-5 text-primary" />
+                  <span>Acesso Rápido Admin (Sem Senha)</span>
                 </button>
-              </form>
-            )}
+              )}
+            </form>
+
+            <div className="text-center space-y-2">
+              <button 
+                onClick={() => setIsSignUp(!isSignUp)}
+                className="text-sm text-primary font-medium hover:underline block w-full"
+              >
+                {isSignUp ? 'Já tem conta? Entre aqui' : 'Não tem conta? Registe-se'}
+              </button>
+              {!isSignUp && (
+                <button 
+                  onClick={async () => {
+                    if (!email) {
+                      setError('Por favor, insira o seu e-mail para recuperar a senha.');
+                      return;
+                    }
+                    try {
+                      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+                        redirectTo: window.location.origin + '/profile',
+                      });
+                      if (error) throw error;
+                      setError('Link de recuperação enviado para o seu e-mail.');
+                    } catch (err: any) {
+                      setError(err.message);
+                    }
+                  }}
+                  className="text-[10px] text-inactive hover:text-primary transition-colors"
+                >
+                  Esqueceu a sua palavra-passe?
+                </button>
+              )}
+            </div>
 
             <p className="text-center text-xs text-inactive">
               Ao entrar, você concorda com nossos Termos de Uso e Política de Privacidade.
@@ -2208,35 +2310,45 @@ export default function App() {
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [showRoleSelection, setShowRoleSelection] = useState(false);
   const [isSubmittingRole, setIsSubmittingRole] = useState(false);
+  const [roleError, setRoleError] = useState<string | null>(null);
 
   const fetchUserData = async (userId: string) => {
-    const { data, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('id', userId)
-      .single();
-    
-    if (!error && data) {
-      setUser({
-        id: data.id,
-        name: data.name,
-        email: data.email,
-        type: data.type,
-        status: data.status,
-        createdAt: data.created_at,
-        lastAccess: data.last_access
-      } as User);
-      setShowRoleSelection(false);
-    } else if (error) {
-      if (error.code !== 'PGRST116') { // Not found is fine, it means we show role selection
-        handleSupabaseError(error, OperationType.GET, 'users');
-      } else {
-        setShowRoleSelection(true);
+    try {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', userId)
+        .single();
+      
+      if (error) {
+        if (error.code === 'PGRST116') {
+          // User not found in 'users' table, show role selection
+          setShowRoleSelection(true);
+        } else {
+          handleSupabaseError(error, OperationType.GET, 'users');
+        }
+        setLoading(false);
+        return;
       }
-    } else {
+
+      if (data) {
+        setUser({
+          id: data.id,
+          name: data.name,
+          email: data.email,
+          type: data.type,
+          status: data.status,
+          createdAt: data.created_at,
+          lastAccess: data.last_access
+        } as User);
+        setShowRoleSelection(false);
+      }
+    } catch (err) {
+      console.error('Error fetching user data:', err);
       setShowRoleSelection(true);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   useEffect(() => {
@@ -2268,13 +2380,21 @@ export default function App() {
 
   const handleRoleSelect = async (type: UserType) => {
     const { data: { session } } = await supabase.auth.getSession();
-    if (!session) return;
+    if (!session) {
+      setIsLoginModalOpen(true);
+      return;
+    }
 
+    const userId = session.user.id;
+    const userEmail = session.user.email || '';
+    const userName = session.user.user_metadata.full_name || 'Utilizador';
+
+    const isAdmin = userEmail.toLowerCase() === 'adilsonnguali@gmail.com';
     const newUser = {
-      id: session.user.id,
-      name: session.user.user_metadata.full_name || 'Utilizador',
-      email: session.user.email || '',
-      type,
+      id: userId,
+      name: isAdmin ? 'Super Admin' : userName,
+      email: userEmail,
+      type: isAdmin ? 'admin' : type,
       status: 'active',
       created_at: new Date().toISOString(),
       last_access: new Date().toISOString()
@@ -2282,47 +2402,99 @@ export default function App() {
 
     try {
       setIsSubmittingRole(true);
+      setRoleError(null);
+      console.log('Iniciando gravação de perfil para:', userId, 'Tipo:', type);
+      
+      // 1. Create/Update User record
       const { error: userError } = await supabase
         .from('users')
         .upsert(newUser);
       
-      if (userError) throw userError;
+      if (userError) {
+        console.error('Erro na tabela users:', userError);
+        throw userError;
+      }
 
+      // 2. If escort, create profile
       if (type === 'escort') {
         const { error: profileError } = await supabase
           .from('escort_profiles')
           .upsert({
-            user_id: session.user.id,
-            artistic_name: session.user.user_metadata.full_name || 'Novo Acompanhante',
+            user_id: userId,
+            artistic_name: userName === 'Utilizador' ? 'Novo Acompanhante' : userName,
             age: 18,
             city: 'Luanda',
             verified: 'pending',
             views: 0,
             rating: 5.0,
-            main_photo_url: `https://picsum.photos/seed/${session.user.id}/600/800`
+            main_photo_url: `https://picsum.photos/seed/${userId}/600/800`
           });
-        if (profileError) throw profileError;
+        if (profileError) {
+          console.error('Erro na tabela escort_profiles:', profileError);
+          throw profileError;
+        }
       }
 
-      await fetchUserData(session.user.id);
-    } catch (error) {
-      handleSupabaseError(error, OperationType.CREATE, 'users/escort_profiles');
+      // 3. Update local state IMMEDIATELY to proceed
+      setUser({
+        id: newUser.id,
+        name: newUser.name,
+        email: newUser.email,
+        type: newUser.type as UserType,
+        status: newUser.status as UserStatus,
+        createdAt: newUser.created_at,
+        lastAccess: newUser.last_access
+      });
+      
+      console.log('Perfil selecionado e gravado com sucesso!');
+      setShowRoleSelection(false);
+      
+    } catch (error: any) {
+      console.error('Erro fatal no handleRoleSelect:', error);
+      const errorMessage = error.message || 'Erro desconhecido ao gravar perfil';
+      setRoleError(`Falha ao gravar perfil: ${errorMessage}. Verifique as permissões da base de dados.`);
     } finally {
       setIsSubmittingRole(false);
     }
   };
 
-  const handleLogin = async (email: string) => {
+  const handleLogin = async (email: string, pass: string) => {
+    setLoginError(null);
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password: pass,
+    });
+    
+    if (error) {
+      handleSupabaseError(error, OperationType.GET, 'auth');
+      throw error;
+    }
+  };
+
+  const handleMagicLink = async (email: string) => {
     setLoginError(null);
     const { error } = await supabase.auth.signInWithOtp({
       email,
       options: {
         emailRedirectTo: window.location.origin,
-      },
+      }
     });
     
     if (error) {
       handleSupabaseError(error, OperationType.GET, 'auth');
+      throw error;
+    }
+  };
+
+  const handleSignUp = async (email: string, pass: string) => {
+    setLoginError(null);
+    const { error } = await supabase.auth.signUp({
+      email,
+      password: pass,
+    });
+    
+    if (error) {
+      handleSupabaseError(error, OperationType.CREATE, 'auth');
       throw error;
     }
   };
@@ -2374,11 +2546,19 @@ export default function App() {
             isOpen={isLoginModalOpen} 
             onClose={() => setIsLoginModalOpen(false)} 
             onLogin={handleLogin} 
+            onSignUp={handleSignUp}
+            onMagicLink={handleMagicLink}
           />
           {loginError && (
             <div className="max-w-md mx-auto mt-4 p-4 bg-alert/10 border border-alert text-alert rounded-lg text-sm flex items-start space-x-2">
               <ShieldAlert className="w-5 h-5 flex-shrink-0" />
               <p>{loginError}</p>
+            </div>
+          )}
+          {roleError && (
+            <div className="max-w-md mx-auto mt-4 p-4 bg-alert/10 border border-alert text-alert rounded-lg text-sm flex items-start space-x-2">
+              <ShieldAlert className="w-5 h-5 flex-shrink-0" />
+              <p>{roleError}</p>
             </div>
           )}
           <RoleSelection onSelect={handleRoleSelect} loading={isSubmittingRole} onLogout={handleLogout} />
@@ -2396,6 +2576,8 @@ export default function App() {
             isOpen={isLoginModalOpen} 
             onClose={() => setIsLoginModalOpen(false)} 
             onLogin={handleLogin} 
+            onSignUp={handleSignUp}
+            onMagicLink={handleMagicLink}
           />
           <main className="pb-20">
             <Routes>
